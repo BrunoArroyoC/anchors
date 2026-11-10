@@ -33,10 +33,10 @@ internal/functions/      backend: talks to Docker/K8s APIs, returns models. No B
 internal/bridge/         adapter: wraps backend calls as tea.Cmd and defines the tea.Msg types
 internal/screen/         UI: Bubble Tea models (Init/Update/View), styles, animations
   app.go                 root model: owns the active screen, routes msgs, switches screens
-  theme/                 the palette (ink on a night sea) + Lip Gloss styles. All colors come from here
-  dots/                  Braille canvas (2x4 dots per cell), ink-art sampling, colors
+  theme/                 the palette (paper-white halftone on near-black, international orange accent) + Lip Gloss styles
+  dots/                  canvas: Braille dots (2x4 per cell) + per-cell glyphs; ink masks (Art), grayscale tone maps (Tone)
   assets/                embedded PNG art (+ src/ Recraft SVG sources)
-  splash/                title screen: ink ship + script wordmark, particle sea -> splash.DoneMsg
+  splash/                title screen: halftone anchor on its chain, condensed wordmark, cursor lens/trail -> splash.DoneMsg
 ```
 
 Dependencies only go one way:
@@ -77,16 +77,16 @@ screen ──> bridge ──> functions ──> models
 - Always handle `tea.WindowSizeMsg` and lay out for small terminals (80x24 minimum).
 - Container state colors must match across screens (running / exited / paused / restarting / unhealthy).
 - Key bindings go through `bubbles/key` with a `help` view so they are discoverable.
-- Art style: hand-drawn ink line art and particles, drawn with Braille dots (`dots.Canvas`), which emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Regular text screens use Lip Gloss + `theme`.
-- Artwork stays still; motion lives in the particle background and reacts to the cursor.
+- Art style (branch `halftoneBackground`): modern editorial poster. The image is a halftone of round glyphs (`· • ●`) on a 45° screen (every other cell, offset per row), with a fine Braille outline traced from the image in the cells between. Type is a bold condensed grotesk wordmark drawn in Braille; small labels are tracked-out text. `dots.Canvas` emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Regular text screens use Lip Gloss + `theme`.
+- Motion lives in the halftone and reacts to the cursor; the composition itself stays put. Tick at 30fps while something moves, 12fps when only the background grain is breathing.
 - `ANCHORS_REDUCE_MOTION=1` must give a calmer variant of every animated screen (less movement, no flashes), not a blank one.
-- Mouse is on (`tea.WithMouseAllMotion`). On the splash the cursor parts the particle sea and leaves a glowing wake; click sends a ring wave.
+- Mouse is on (`tea.WithMouseAllMotion`). On the splash the cursor is a lens that swells and magnifies the halftone and leaves an orange trail that cools off; click sends a ripple.
 
 ## Art pipeline
 
 1. Generate vector art with the `openrouter-images` skill, model `recraft/recraft-v4-pro-vector` (SVG only, ~$0.30/image). Keep the SVG in `internal/screen/assets/src/`.
-2. Ask for black ink on a plain white background. Rasterize to a PNG ~1000px wide, e.g. with `@resvg/resvg-js` run from a scratch dir (not a project dependency).
-3. Embed it in `assets/assets.go`. `dots.Art.Mask` samples the ink into Braille dots at the terminal's size.
+2. Rasterize to a PNG ~1000px wide, e.g. with `@resvg/resvg-js` run from a scratch dir (not a project dependency). Halftone images: grayscale, one big bold subject, light on black (fine detail like a distant ship gets lost — a moon+ship scene was unreadable). Lettering: black on white.
+3. Embed it in `assets/assets.go`. `dots.LoadTone` turns an image into a tone map for halftones; `dots.Art.Mask` turns lettering/line art into Braille dots.
 4. Look at the result: `ANCHORS_SNAPSHOT_DIR=/some/dir go test ./internal/screen/splash/` writes each test frame as a PNG (80x24, 120x36, 200x55). `bench_test.go` measures frame cost.
 
 Ask before adding any new library.

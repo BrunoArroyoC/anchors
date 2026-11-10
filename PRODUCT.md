@@ -34,7 +34,7 @@ Runs in a terminal next to the user's other dev and ops work. Talks to the local
 ## Brand Commitments
 
 - Name: **anchors**. Nautical imagery (ocean, anchors, ships) is the author's chosen theme.
-- Opening screen: a title screen that waits for Enter. Hand-drawn ink art and a handwritten wordmark over an animated particle sea. The author rejected pixel art.
+- Opening screen: a title screen that waits for Enter. The author rejected pixel art. Explored directions: hand-drawn ink + particle sea (earlier branch), and a modern halftone poster with a cursor-reactive halftone (branch `halftoneBackground`, design choices delegated to Claude).
 
 ## Evidence on Hand
 

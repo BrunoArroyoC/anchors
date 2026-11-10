@@ -35,7 +35,7 @@ func TestFrames(t *testing.T) {
 		base := time.Unix(1_000_000, 0)
 		at := func(sec float64) { m.Update(frameMsg(base.Add(time.Duration(sec * float64(time.Second))))) }
 		run := func(until float64, each func(f float64)) {
-			for f := m.now; f < until; f += 1.0 / fps {
+			for f := m.now; f < until; f += 1.0 / activeFPS {
 				if each != nil {
 					each(f)
 				}
@@ -124,6 +124,16 @@ func writePNG(t *testing.T, path, view string, cols, rows int) {
 									img.Set(x*cw+1+dx*4+xx, r*ch+1+dy*4+yy, fg)
 								}
 							}
+						}
+					}
+				}
+			case ru == '·' || ru == '•' || ru == '●':
+				// Halftone dots, sized roughly like a terminal font draws them.
+				rad := map[rune]float64{'·': 1.1, '•': 2.2, '●': 3.6}[ru]
+				for yy := 0; yy < ch; yy++ {
+					for xx := 0; xx < cw; xx++ {
+						if (float64(xx)+0.5-4)*(float64(xx)+0.5-4)+(float64(yy)+0.5-9)*(float64(yy)+0.5-9) <= rad*rad {
+							img.Set(x*cw+xx, r*ch+yy, fg)
 						}
 					}
 				}
