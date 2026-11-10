@@ -32,6 +32,11 @@ internal/models/         plain data structs shared by every layer (DockerModel, 
 internal/functions/      backend: talks to Docker/K8s APIs, returns models. No Bubble Tea imports.
 internal/bridge/         adapter: wraps backend calls as tea.Cmd and defines the tea.Msg types
 internal/screen/         UI: Bubble Tea models (Init/Update/View), styles, animations
+  app.go                 root model: owns the active screen, routes msgs, switches screens
+  theme/                 the palette (ink on a night sea) + Lip Gloss styles. All colors come from here
+  dots/                  Braille canvas (2x4 dots per cell), ink-art sampling, colors
+  assets/                embedded PNG art (+ src/ Recraft SVG sources)
+  splash/                title screen: ink ship + script wordmark, particle sea -> splash.DoneMsg
 ```
 
 Dependencies only go one way:
@@ -72,6 +77,19 @@ screen ──> bridge ──> functions ──> models
 - Always handle `tea.WindowSizeMsg` and lay out for small terminals (80x24 minimum).
 - Container state colors must match across screens (running / exited / paused / restarting / unhealthy).
 - Key bindings go through `bubbles/key` with a `help` view so they are discoverable.
+- Art style: hand-drawn ink line art and particles, drawn with Braille dots (`dots.Canvas`), which emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Regular text screens use Lip Gloss + `theme`.
+- Artwork stays still; motion lives in the particle background and reacts to the cursor.
+- `ANCHORS_REDUCE_MOTION=1` must give a calmer variant of every animated screen (less movement, no flashes), not a blank one.
+- Mouse is on (`tea.WithMouseAllMotion`). On the splash the cursor parts the particle sea and leaves a glowing wake; click sends a ring wave.
+
+## Art pipeline
+
+1. Generate vector art with the `openrouter-images` skill, model `recraft/recraft-v4-pro-vector` (SVG only, ~$0.30/image). Keep the SVG in `internal/screen/assets/src/`.
+2. Ask for black ink on a plain white background. Rasterize to a PNG ~1000px wide, e.g. with `@resvg/resvg-js` run from a scratch dir (not a project dependency).
+3. Embed it in `assets/assets.go`. `dots.Art.Mask` samples the ink into Braille dots at the terminal's size.
+4. Look at the result: `ANCHORS_SNAPSHOT_DIR=/some/dir go test ./internal/screen/splash/` writes each test frame as a PNG (80x24, 120x36, 200x55). `bench_test.go` measures frame cost.
+
+Ask before adding any new library.
 
 ## Conventions
 
