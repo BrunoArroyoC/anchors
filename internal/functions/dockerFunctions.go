@@ -10,10 +10,10 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func listImages(ctx context.Context, cli *client.Client) ([]models.DockerModel, error) {
-	result, error := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
-	if error != nil {
-		return nil, error
+func ListContainers(ctx context.Context, cli *client.Client) ([]models.DockerModel, error) {
+	result, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
 	containers := make([]models.DockerModel, 0, len(result.Items))
