@@ -94,6 +94,7 @@ type Model struct {
 	docker  *client.Client
 	host    string
 	keys    keyMap
+	dkeys   dialogKeys
 	reduce  bool
 	visible bool // false while the splash is still up: data loads, nothing ticks
 
@@ -120,7 +121,8 @@ type Model struct {
 	filter    string
 	filtering bool
 	showKeys  bool
-	hover     int // list row under the mouse, -1 for none
+	hover     int     // list row under the mouse, -1 for none
+	dlg       *dialog // the container dialog, nil when closed
 
 	// Animation, in seconds since the first frame.
 	start, now, last float64
@@ -151,6 +153,7 @@ func New(docker *client.Client) *Model {
 	m := &Model{
 		docker: docker,
 		keys:   newKeys(),
+		dkeys:  newDialogKeys(),
 		reduce: os.Getenv("ANCHORS_REDUCE_MOTION") != "",
 		hover:  -1,
 		born:   map[string]float64{}, flash: map[string]float64{},
@@ -240,6 +243,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.kick()
 
+	case bridge.StartedMsg, bridge.StoppedMsg, bridge.LogsOpenedMsg, bridge.LogsMsg:
+		return m, m.dialogMsg(msg)
+
 	case tea.KeyMsg:
 		return m, m.key(msg)
 
@@ -249,8 +255,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// syncKeys turns on the bindings that do something right now. key.Matches
+// ignores disabled bindings and the footer hides them.
+func (m *Model) syncKeys() {
+	m.keys.Open.SetEnabled(m.sec == containersTab && len(m.containers) > 0)
+	if m.dlg != nil {
+		m.dkeys.Start.SetEnabled(m.dlg.canStart())
+		m.dkeys.Stop.SetEnabled(m.dlg.canStop())
+	}
+}
+
 func (m *Model) key(k tea.KeyMsg) tea.Cmd {
 	m.poke()
+	m.syncKeys()
+	if m.dlg != nil {
+		return m.dialogKey(k)
+	}
 	if m.filtering {
 		switch k.Type {
 		case tea.KeyEsc:
@@ -282,6 +302,10 @@ func (m *Model) key(k tea.KeyMsg) tea.Cmd {
 		m.move(-1)
 	case key.Matches(k, ks.Down):
 		m.move(1)
+	case key.Matches(k, ks.Open):
+		if m.sec == containersTab {
+			return tea.Batch(m.openDialog(), m.kick())
+		}
 	case key.Matches(k, ks.PageUp):
 		m.move(-max(1, m.lay.listRows-1))
 	case key.Matches(k, ks.PageDown):
@@ -331,6 +355,9 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 	m.poke()
+	if m.dlg != nil {
+		return m.dialogMouse(e)
+	}
 	l := m.lay
 	p := vec{float64(e.X) + 0.5, float64(e.Y)*2 + 1}
 	box := l.inBox(e.X, e.Y)
@@ -363,6 +390,9 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 			}
 		case m.hover >= 0:
 			m.move(m.off[m.sec] + m.hover - m.sel[m.sec])
+			if m.sec == containersTab {
+				return tea.Batch(m.openDialog(), m.kick())
+			}
 		case in && !m.reduce:
 			m.ripples = append(m.ripples, ripple{at: p})
 		}
@@ -488,6 +518,7 @@ func (m *Model) setContainers(cs []models.DockerModel) {
 		m.busy(1)
 	}
 	m.reanchor(containersTab)
+	m.dialogSynced()
 }
 
 func (m *Model) setImages(is []models.ImageModel) {
@@ -686,7 +717,8 @@ func (m *Model) animating() bool {
 		m.tabX != [2]float64{float64(s[0]), float64(s[1])} ||
 		m.heatMax > 0.02 || len(m.ripples) > 0 ||
 		(m.lensOn > 0 && m.lensOn < 1) ||
-		(m.lensOn > 0 && math.Hypot(m.mouse.X-m.lens.X, m.mouse.Y-m.lens.Y) > 0.05)
+		(m.lensOn > 0 && math.Hypot(m.mouse.X-m.lens.X, m.mouse.Y-m.lens.Y) > 0.05) ||
+		(m.dlg != nil && (m.now-m.dlg.born < dialogOpen+0.3 || m.dlg.busyPhase()))
 }
 
 func smooth(e0, e1, x float64) float64 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"docker-tool/internal/models"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/moby/moby/api/types/container"
@@ -21,6 +22,39 @@ func ListContainers(ctx context.Context, cli *client.Client) ([]models.DockerMod
 		containers = append(containers, toDockerContainers(value))
 	}
 	return containers, nil
+}
+
+//Actions for one container
+
+// functions: start and return. No waiting, no printing.
+func StartContainer(ctx context.Context, cli *client.Client, id string) error {
+	if _, err := cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		return fmt.Errorf("start container %s: %w", id, err)
+	}
+	return nil
+}
+
+// functions: stop and return No waiting, no priting
+// StopContainer stops a running container: SIGTERM, then SIGKILL once its
+// stop timeout runs out. It returns when the container is down. Stopping a
+// container that is already stopped is not an error.
+func StopContainer(ctx context.Context, cli *client.Client, id string) error {
+	_, err := cli.ContainerStop(ctx, id, client.ContainerStopOptions{})
+	if err != nil {
+		return fmt.Errorf("stop container %s: %w", id, err)
+	}
+	return nil
+}
+
+// functions: open the log stream. The caller reads it and closes it.
+func ContainerLogs(ctx context.Context, cli *client.Client, id string) (io.ReadCloser, error) {
+	out, err := cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{
+		ShowStdout: true, ShowStderr: true, Follow: true, Tail: "200",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("logs %s: %w", id, err)
+	}
+	return out, nil
 }
 
 func toDockerContainers(c container.Summary) models.DockerModel {

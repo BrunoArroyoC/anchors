@@ -21,10 +21,14 @@ func (m *Model) View() string {
 		return fmt.Sprintf("anchors needs a terminal of at least %dx%d (this one is %dx%d)",
 			minCols, minRows, m.cv.Cols, m.cv.Rows)
 	}
+	m.syncKeys()
 	m.cv.Clear()
 	top, bot := m.drawBox()
 	hints := m.drawFooter()
 	m.drawScene(top, bot, hints)
+	if m.dlg != nil {
+		m.drawDialog(hints)
+	}
 	return m.cv.Render(cNight)
 }
 
@@ -535,12 +539,26 @@ func (m *Model) drawFooter() [2]int {
 			parts[2].fg = cPanel // the caret blinks while the screen is awake
 		}
 	} else {
-		for _, b := range m.keys.ShortHelp() {
-			h := b.Help()
-			if len(parts) > 0 {
-				parts = append(parts, span{"    ", cMist})
+		binds := m.keys.ShortHelp()
+		if m.dlg != nil {
+			binds = m.dkeys.ShortHelp()
+		}
+		// Four spaces between hints, fewer when that doesn't fit.
+		for _, gap := range []string{"    ", "   ", "  "} {
+			parts = parts[:0]
+			for _, b := range binds {
+				if !b.Enabled() {
+					continue
+				}
+				h := b.Help()
+				if len(parts) > 0 {
+					parts = append(parts, span{gap, cMist})
+				}
+				parts = append(parts, span{h.Key, cSignal}, span{" " + h.Desc, cMist})
 			}
-			parts = append(parts, span{h.Key, cSignal}, span{" " + h.Desc, cMist})
+			if width(parts) <= cv.Cols-4 {
+				break
+			}
 		}
 	}
 	w := min(width(parts), cv.Cols-4)

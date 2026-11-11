@@ -200,3 +200,177 @@ func TestScreens(t *testing.T) {
 		check("13-empty")
 	}
 }
+
+// TestDialog opens a stopped container, starts it and follows its output;
+// then a start that Docker refuses; then a click on a running container.
+func TestDialog(t *testing.T) {
+	dir := os.Getenv("ANCHORS_SNAPSHOT_DIR")
+	for _, sz := range [][2]int{{80, 24}, {120, 36}, {200, 55}} {
+		cols, rows := sz[0], sz[1]
+		m := New(nil)
+		m.Update(tea.WindowSizeMsg{Width: cols, Height: rows})
+		m.Init()
+		var cmd tea.Cmd
+		run := func(d float64) {
+			for f, end := m.now, m.now+d; f < end; f += 1.0 / fps {
+				_, cmd = m.Update(frameMsg(base.Add(time.Duration(f * float64(time.Second)))))
+			}
+		}
+		check := func(name string) {
+			t.Helper()
+			view := m.View()
+			lines := strings.Split(view, "\n")
+			if len(lines) != rows {
+				t.Fatalf("%dx%d %s: %d lines, want %d", cols, rows, name, len(lines), rows)
+			}
+			for i, l := range lines {
+				if w := len([]rune(sgr.ReplaceAllString(l, ""))); w != cols {
+					t.Fatalf("%dx%d %s line %d: width %d, want %d", cols, rows, name, i, w, cols)
+				}
+			}
+			if dir != "" {
+				os.WriteFile(filepath.Join(dir, fmt.Sprintf("%dx%d-d%s.ans", cols, rows, name)), []byte(view), 0o644)
+			}
+		}
+		key := func(k tea.KeyMsg) { m.Update(k) }
+		runes := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+		_, cmd = m.Update(frameMsg(base))
+		m.Update(bridge.ContainersMsg{Containers: sampleContainers()})
+		run(1.5)
+
+		m.selectContainer(sampleContainers()[4].ID) // worker, stopped
+		key(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.dlg == nil || m.dlg.c.Name != "worker" || m.dlg.phase != phaseReady {
+			t.Fatalf("%dx%d: enter on worker should open its dialog ready to start, got %+v", cols, rows, m.dlg)
+		}
+		run(0.1)
+		check("0-unfolding")
+		run(0.5)
+		check("1-ready")
+
+		key(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.dlg.phase != phaseStarting {
+			t.Fatalf("%dx%d: enter should start it", cols, rows)
+		}
+		run(0.3)
+		check("2-starting")
+
+		id := m.dlg.c.ID
+		m.Update(bridge.StartedMsg{ID: id})
+		if m.dlg.phase != phaseRunning || !m.dlg.opening {
+			t.Fatalf("%dx%d: after the start it should open the logs", cols, rows)
+		}
+		s := &bridge.LogStream{ID: id}
+		m.Update(bridge.LogsOpenedMsg{ID: id, Stream: s})
+		var lines []bridge.LogLine
+		lines = append(lines,
+			bridge.LogLine{Text: "\x1b[32mINFO\x1b[0m\tworker 2.4.1 starting"},
+			bridge.LogLine{Text: "WARN\tqueue \"emails\" is empty, sleeping 5s", Stderr: true},
+			bridge.LogLine{Text: "progress 10%\rprogress 100%"},
+			bridge.LogLine{Text: "job 1 → " + strings.Repeat("payload ", 40)},
+			bridge.LogLine{Text: "日本 emoji 🚢 ok"},
+		)
+		for i := range 60 {
+			lines = append(lines, bridge.LogLine{Text: fmt.Sprintf("INFO\tjob %d done in %dms", i+2, 40+i*7%90)})
+		}
+		m.Update(bridge.LogsMsg{Stream: s, Lines: lines[:5]})
+		run(0.1)
+		check("3-printing")
+		m.Update(bridge.LogsMsg{Stream: s, Lines: lines[5:]})
+		run(0.6)
+		check("4-following")
+
+		key(tea.KeyMsg{Type: tea.KeyPgUp})
+		key(tea.KeyMsg{Type: tea.KeyPgUp})
+		m.Update(bridge.LogsMsg{Stream: s, Lines: lines[:3]}) // more output while scrolled back: the view holds still
+		run(0.4)
+		check("5-scrolled")
+		key(runes("G"))
+		if m.dlg.back != 0 {
+			t.Fatalf("%dx%d: G should follow again", cols, rows)
+		}
+
+		key(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.dlg.phase != phaseRunning {
+			t.Fatalf("%dx%d: enter must not stop a running container", cols, rows)
+		}
+		key(runes("x"))
+		if m.dlg.phase != phaseStopping {
+			t.Fatalf("%dx%d: x should stop it", cols, rows)
+		}
+		m.Update(bridge.LogsMsg{Stream: s, Lines: []bridge.LogLine{{Text: "SIGTERM received, finishing job 62"}}})
+		run(0.3)
+		check("5b-stopping")
+		m.Update(bridge.StoppedMsg{ID: id})
+		if m.dlg.phase != phaseReady || m.dlg.c.State != "exited" {
+			t.Fatalf("%dx%d: once stopped the dialog should offer a start", cols, rows)
+		}
+
+		m.Update(bridge.LogsMsg{Stream: s, Done: true})
+		cs := sampleContainers()
+		cs[4].Status = "Exited (0) 1 second ago"
+		m.Update(bridge.ContainersMsg{Containers: cs})
+		if m.dlg.phase != phaseReady {
+			t.Fatalf("%dx%d: once its output ended and it stopped, the dialog should offer a start again", cols, rows)
+		}
+		run(6)
+		check("6-ended")
+		if cmd != nil {
+			t.Fatalf("%dx%d: still ticking with the dialog at rest", cols, rows)
+		}
+
+		// Docker refuses the next start.
+		key(runes("s"))
+		m.Update(bridge.StartedMsg{ID: id, Err: errors.New("start container " + id + ": Error response from daemon: driver failed programming external connectivity on endpoint worker: Bind for 0.0.0.0:8080 failed: port is already allocated")})
+		run(0.6)
+		check("7-failed")
+		if m.dlg.phase != phaseFailed {
+			t.Fatalf("%dx%d: a refused start should fail", cols, rows)
+		}
+
+		key(runes("q"))
+		if m.dlg != nil {
+			t.Fatalf("%dx%d: q should close the dialog, not quit", cols, rows)
+		}
+
+		// Clicking a running container opens it and follows its output at once.
+		key(runes("g")) // back to the top of the list, where the running ones are
+		run(0.5)
+		m.Update(tea.MouseMsg{X: m.lay.textX + 2, Y: m.lay.listTop, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		if m.dlg == nil || m.dlg.phase != phaseRunning || !m.dlg.opening {
+			t.Fatalf("%dx%d: a click on a running container should open it and its output", cols, rows)
+		}
+		// A stop that fails leaves it running and says why.
+		key(runes("x"))
+		m.Update(bridge.StoppedMsg{ID: m.dlg.c.ID, Err: errors.New("stop container " + m.dlg.c.ID + ": context deadline exceeded")})
+		if m.dlg.phase != phaseRunning || !m.dlg.stopErr {
+			t.Fatalf("%dx%d: a failed stop should leave it running and say so", cols, rows)
+		}
+		run(0.6)
+		check("8-stop-failed")
+
+		// A stream that arrives after the dialog closed is closed, not shown.
+		key(tea.KeyMsg{Type: tea.KeyEsc})
+		m.Update(bridge.LogsOpenedMsg{ID: m.containers[0].ID, Stream: &bridge.LogStream{}})
+		if m.dlg != nil {
+			t.Fatalf("%dx%d: esc should close the dialog", cols, rows)
+		}
+	}
+}
+
+func TestCleanLog(t *testing.T) {
+	for in, want := range map[string]string{
+		"\x1b[1;31mERR\x1b[0m done":    "ERR done",
+		"a\tb":                         "a   b",
+		"50%\r100%":                    "100%",
+		"\x1b]0;title\x07shown":        "shown",
+		"ship 🚢 港":                     "ship □ □",
+		"é":                           "e",
+		"bell\x07 and nul\x00 removed": "bell and nul removed",
+	} {
+		if got := cleanLog(in); got != want {
+			t.Errorf("cleanLog(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

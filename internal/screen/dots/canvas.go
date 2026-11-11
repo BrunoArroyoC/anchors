@@ -62,6 +62,21 @@ func (c *Canvas) Back(col, row int, bg RGB) {
 	c.bg[i], c.hasBg[i] = bg, true
 }
 
+// Fade pulls everything in one cell (dots, glyph, background) toward ground
+// by k (0 leaves it, 1 makes it ground). A cell without its own background
+// is already ground there.
+func (c *Canvas) Fade(col, row int, ground RGB, k float32) {
+	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {
+		return
+	}
+	i := row*c.Cols + col
+	c.col[i] = Lerp(c.col[i], ground, k)
+	c.gcol[i] = Lerp(c.gcol[i], ground, k)
+	if c.hasBg[i] {
+		c.bg[i] = Lerp(c.bg[i], ground, k)
+	}
+}
+
 // Braille dot bits, indexed [dy][dx] inside a cell.
 var dotBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
 
