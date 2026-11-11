@@ -2,8 +2,8 @@
 // moored on this machine, in three sections (containers, images, and
 // Kubernetes pods, which are not connected yet).
 //
-// The manifest is a box floating on a full-screen halftone sea, beside a
-// halftone container ship whose top tiers of cargo are your containers. The sea swells while you work, parts under the cursor, leaves an
+// The manifest is a box floating on a full-screen halftone sea, with a
+// container ship behind it as a watermark whose cargo is your containers. The sea swells while you work, parts under the cursor, leaves an
 // orange wake and carries ripples; the box unfolds from its middle when the
 // screen opens, rows print in from halftone dots, the selection glides, and
 // running containers breathe. All of it settles when you stop touching the
@@ -157,7 +157,6 @@ func New(docker *client.Client) *Model {
 	if docker != nil {
 		m.host = docker.DaemonHost()
 	}
-	m.ship.hover = -1
 	if t, err := dots.LoadTone(assets.ShipPNG, 400, 1); err == nil {
 		m.ship.tone = t // without it the dashboard is the box alone
 	}
@@ -337,7 +336,6 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 	m.mouse, m.mouseIn = p, !box
 	in := !box
 
-	m.ship.hover = m.ship.slotAt(e.X, e.Y)
 	m.hover = -1
 	if vi := e.Y - l.listTop; box && vi >= 0 && vi < l.listRows && m.off[m.sec]+vi < len(m.rows(m.sec)) {
 		m.hover = vi
@@ -358,8 +356,6 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 			}
 		case m.hover >= 0:
 			m.move(m.off[m.sec] + m.hover - m.sel[m.sec])
-		case m.ship.hover >= 0 && m.ship.hover < len(m.containers):
-			m.selectContainer(m.containers[m.ship.hover].ID)
 		case in && !m.reduce:
 			m.ripples = append(m.ripples, ripple{at: p})
 		}
@@ -534,13 +530,11 @@ func (m *Model) relayout() {
 	}
 	l.bx0 = (W - bw) / 2
 	l.bx1 = l.bx0 + bw - 1
-	if left := m.ship.place(m.cv); left > 0 {
-		l.bx0, l.bx1 = left, W-4 // the ship takes the left, the box the rest
-	}
 	l.by0 = (H - bh - 2) / 2 // the key hints sit under the box
 	l.by1 = l.by0 + bh - 1
 	l.helpRow = min(H-1, l.by1+2)
 	l.markX, l.glyphX, l.textX = l.bx0+1, l.bx0+3, l.bx0+5
+	m.ship.place(m.cv, *l)
 	l.inR = l.bx1 - 1
 
 	y := l.by0 + 1

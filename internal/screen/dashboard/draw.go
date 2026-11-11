@@ -25,7 +25,7 @@ func (m *Model) View() string {
 	top, bot := m.drawBox()
 	hints := m.drawFooter()
 	m.drawSea(top, bot, hints)
-	m.drawShip()
+	m.drawShip(top, bot)
 	return m.cv.Render(cNight)
 }
 
@@ -114,9 +114,6 @@ func (m *Model) drawSea(top, bot int, hints [2]int) {
 			dx := math.Max(0, math.Max(bx0-p.X, p.X-bx1))
 			dy := math.Max(0, math.Max(by0-p.Y, p.Y-by1))
 			calm := 0.35 + 0.65*smooth(0.5, 6, math.Hypot(dx, dy))
-			if m.ship.on {
-				calm = math.Min(calm, smooth(0, 4, m.ship.clearing(p)))
-			}
 
 			src, lens := p, 0.0
 			if m.lensOn > 0 {
@@ -230,6 +227,9 @@ func (m *Model) drawFrame(top, bot int) {
 		sync = []span{{" synced " + m.synced.Format("15:04:05") + " ", cMist}}
 	}
 	m.write(l.bx0+2, bot, l.bx1-2, 1, sync...)
+	if leg := m.legend(); leg != nil && width(sync)+width(leg)+8 < l.bx1-l.bx0 {
+		m.write(l.bx1-2-width(leg), bot, l.bx1-1, 1, leg...)
+	}
 }
 
 // drawHeader is the summary line at the top of the box.

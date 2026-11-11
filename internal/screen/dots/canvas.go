@@ -45,6 +45,14 @@ func (c *Canvas) ClearCell(col, row int) {
 	c.bits[i], c.glyph[i], c.pri[i], c.hasBg[i] = 0, 0, 0, false
 }
 
+// HasGlyph reports whether a cell holds a glyph (text, a halftone dot).
+func (c *Canvas) HasGlyph(col, row int) bool {
+	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {
+		return false
+	}
+	return c.glyph[row*c.Cols+col] != 0
+}
+
 // Back gives one cell its own background instead of the canvas ground.
 func (c *Canvas) Back(col, row int, bg RGB) {
 	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {
