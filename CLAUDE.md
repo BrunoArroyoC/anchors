@@ -4,7 +4,7 @@
 
 **anchors** is a terminal UI for managing Docker containers and Kubernetes pods: list, inspect, and act on them (start/stop/restart, logs, exec, etc.) from one interface. The UI is built with Bubble Tea and **has to look great**: smooth animations, a consistent theme, and polished transitions on every screen are core requirements, not extras.
 
-Status: early. Docker container listing exists in the backend. Kubernetes, the bridge layer, and the screens are still to be built.
+Status: early. Docker container listing exists in the backend, and the splash screen is done. Kubernetes, the bridge layer, and the other screens are still to be built.
 
 ## Stack
 
@@ -77,7 +77,7 @@ screen ──> bridge ──> functions ──> models
 - Always handle `tea.WindowSizeMsg` and lay out for small terminals (80x24 minimum).
 - Container state colors must match across screens (running / exited / paused / restarting / unhealthy).
 - Key bindings go through `bubbles/key` with a `help` view so they are discoverable.
-- Art style (branch `halftoneBackground`): modern editorial poster. The image is a halftone of round glyphs (`· • ●`) on a 45° screen (every other cell, offset per row), with a fine Braille outline traced from the image in the cells between. Type is a bold condensed grotesk wordmark drawn in Braille; small labels are tracked-out text. `dots.Canvas` emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Regular text screens use Lip Gloss + `theme`.
+- Art style: the halftone poster is **the project's design**. Every new screen follows it (near-black ground, paper-white halftone, international-orange accent, condensed grotesk type). It is a modern editorial poster. The image is a halftone of round glyphs (`· • ●`) on a 45° screen (every other cell, offset per row), with a fine Braille outline traced from the image in the cells between. Type is a bold condensed grotesk wordmark drawn in Braille; small labels are tracked-out text. `dots.Canvas` emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Other directions were explored and not chosen: hand-drawn ink with a particle sea (commit `ffad13a`) and an isometric box grid (branch `boxesBackground`). Regular text screens use Lip Gloss + `theme`.
 - Motion lives in the halftone and reacts to the cursor; the composition itself stays put. Tick at 30fps while something moves, 12fps when only the background grain is breathing.
 - `ANCHORS_REDUCE_MOTION=1` must give a calmer variant of every animated screen (less movement, no flashes), not a blank one.
 - Mouse is on (`tea.WithMouseAllMotion`). On the splash the cursor is a lens that swells and magnifies the halftone and leaves an orange trail that cools off; click sends a ripple.
