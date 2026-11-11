@@ -12,7 +12,9 @@ const (
 	Ash    = "#26262c" // the faintest halftone dots
 	Mist   = "#85828c" // secondary text, labels
 	Signal = "#ff4f00" // international orange: cursor, keys, focus, trouble
-	Raise  = "#17161b" // a row under the mouse
+	Panel  = "#111115" // a box floating over the halftone
+	Frame  = "#4a4850" // the box's hairline border
+	Raise  = "#1c1b21" // a row under the mouse
 	Lift   = "#2a1a13" // the selected row: night warmed by the signal
 )
 

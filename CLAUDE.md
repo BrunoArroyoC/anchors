@@ -37,7 +37,7 @@ internal/screen/         UI: Bubble Tea models (Init/Update/View), styles, anima
   dots/                  canvas: Braille dots (2x4 per cell) + per-cell glyphs; ink masks (Art), grayscale tone maps (Tone)
   assets/                embedded PNG art (+ src/ Recraft SVG sources)
   splash/                title screen: halftone anchor on its chain, condensed wordmark, cursor lens/trail -> splash.DoneMsg
-  dashboard/             main screen: halftone band + tabs (containers / images / pods) + list + detail panel + key footer
+  dashboard/             main screen: a box centered over a full-screen halftone sea; inside, summary + tabs (containers / images / pods) + list + detail panel; key hints under the box
 ```
 
 Dependencies only go one way:
@@ -79,7 +79,8 @@ screen ──> bridge ──> functions ──> models
 - Key bindings go through `bubbles/key` in a `keyMap` that satisfies `help.KeyMap`: `ShortHelp` is the footer, `FullHelp` is the `?` sheet. Screens drawn on the canvas render those bindings themselves.
 - Art style: the halftone poster is **the project's design**. Every new screen follows it (near-black ground, paper-white halftone, international-orange accent, condensed grotesk type). It is a modern editorial poster. The image is a halftone of round glyphs (`· • ●`) on a 45° screen (every other cell, offset per row), with a fine Braille outline traced from the image in the cells between. Type is a bold condensed grotesk wordmark drawn in Braille; small labels are tracked-out text. `dots.Canvas` emits raw truecolor ANSI (Lip Gloss per cell is too slow at 30fps). Pixel art / half-blocks was tried and rejected by the author. Other directions were explored and not chosen: hand-drawn ink with a particle sea (commit `ffad13a`) and an isometric box grid (branch `boxesBackground`). Regular text screens use Lip Gloss + `theme`.
 - Motion lives in the halftone and reacts to the cursor; the composition itself stays put. Tick at 30fps while something moves, 12fps when only the background grain is breathing.
-- Dashboard motion (all of it settles ~4.5s after the last key or mouse event, then the frame loop stops): rows print in from halftone dots, the selection bar (Braille, quarter-row steps) and the tab underline glide, running containers breathe, a container that changes state glows orange, the band's halftone swells and parts under the cursor, `r` sends a ripple. Data refreshes every 5s without waking the frame loop unless something changed.
+- Dashboard (branch `dashBoardMotionBackground`; the earlier full-width list with a halftone band is on branch `dashboardList`): the manifest is a box (`theme.Panel` with a `theme.Frame` hairline, name set into the top edge, sync state into the bottom edge) centered over a halftone sea that fills the screen and thins out near the box.
+- Dashboard motion (all of it settles ~4.5s after the last key or mouse event, then the frame loop stops): the box unfolds from its middle on open, rows print in from halftone dots, the selection bar (Braille, quarter-row steps) and the tab underline glide, running containers breathe, a container that changes state glows orange, the sea swells, parts under the cursor and keeps an orange wake, clicking the sea or pressing `r` sends a ripple. Data refreshes every 5s without waking the frame loop unless something changed.
 - The dashboard loads containers and images while the splash is up (`App` routes bridge msgs to it), so it opens with data.
 - `ANCHORS_REDUCE_MOTION=1` must give a calmer variant of every animated screen (less movement, no flashes), not a blank one.
 - Mouse is on (`tea.WithMouseAllMotion`). On the splash the cursor is a lens that swells and magnifies the halftone and leaves an orange trail that cools off; click sends a ripple.

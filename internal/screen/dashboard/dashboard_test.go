@@ -114,7 +114,9 @@ func TestScreens(t *testing.T) {
 		}
 
 		frame(0)
-		run(0.4, nil)
+		run(0.2, nil)
+		check("0-opening")
+		run(0.6, nil)
 		check("1-loading")
 
 		m.Update(bridge.ContainersMsg{Containers: sampleContainers()})
@@ -134,7 +136,7 @@ func TestScreens(t *testing.T) {
 		start := m.now
 		run(start+0.6, func(f float64) {
 			p := (f - start) / 0.6
-			m.Update(tea.MouseMsg{X: int(float64(cols) * (0.3 + 0.5*p)), Y: 1, Action: tea.MouseActionMotion})
+			m.Update(tea.MouseMsg{X: int(float64(cols) * (0.02 + 0.6*p)), Y: int(float64(rows) * (0.95 - 0.3*p)), Action: tea.MouseActionMotion})
 		})
 		check("4-working")
 

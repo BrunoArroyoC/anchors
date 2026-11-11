@@ -36,6 +36,15 @@ func (c *Canvas) Clear() {
 	clear(c.hasBg)
 }
 
+// ClearCell empties one cell: no dots, no glyph, ground background.
+func (c *Canvas) ClearCell(col, row int) {
+	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {
+		return
+	}
+	i := row*c.Cols + col
+	c.bits[i], c.glyph[i], c.pri[i], c.hasBg[i] = 0, 0, 0, false
+}
+
 // Back gives one cell its own background instead of the canvas ground.
 func (c *Canvas) Back(col, row int, bg RGB) {
 	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {

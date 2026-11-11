@@ -13,12 +13,6 @@ const wordmark = "A N C H O R S"
 // Halftone glyphs from smallest to largest, as on the splash.
 var ramp = [...]rune{'·', '•', '●'}
 
-const (
-	markCol  = 1 // the selection bar
-	glyphCol = 3 // a row's state glyph
-	textCol  = 5 // where the columns start
-)
-
 func (m *Model) View() string {
 	if m.cv == nil {
 		return ""
@@ -28,15 +22,9 @@ func (m *Model) View() string {
 			minCols, minRows, m.cv.Cols, m.cv.Rows)
 	}
 	m.cv.Clear()
-	m.drawBand()
-	m.drawTabs()
-	m.drawList()
-	if m.showKeys {
-		m.drawKeys()
-	} else {
-		m.drawDetail()
-	}
-	m.drawFooter()
+	top, bot := m.drawBox()
+	hints := m.drawFooter()
+	m.drawSea(top, bot, hints)
 	return m.cv.Render(cNight)
 }
 
@@ -44,6 +32,14 @@ func (m *Model) View() string {
 type span struct {
 	s  string
 	fg dots.RGB
+}
+
+func width(parts []span) int {
+	n := 0
+	for _, s := range parts {
+		n += len([]rune(s.s))
+	}
+	return n
 }
 
 // write draws spans from col, clipped before limit, and returns where they end.
@@ -82,29 +78,42 @@ func (m *Model) print(col, row int, s string, fg dots.RGB, p float64) int {
 	return col
 }
 
-// drawBand is the poster strip across the top: the wordmark on the left, a
-// halftone sea that swells while you work and parts under the cursor, and
-// the counts on the right.
-func (m *Model) drawBand() {
-	cv := m.cv
-	// Counts and host, right-aligned, decide where the halftone stops.
-	summary := m.summary()
-	sumW := 0
-	for _, s := range summary {
-		sumW += len([]rune(s.s))
+// unfold is how far the box has opened, 0..1.
+func (m *Model) unfold() float64 {
+	if m.reduce {
+		return 1
 	}
-	host := m.host
-	stop := cv.Cols - 2 - max(sumW, len([]rune(host))) - 3
-	start := 2 + len(wordmark) + 4
+	return smooth(0, boxOpen, m.now)
+}
 
+// drawSea fills the screen around the box with the halftone: it swells
+// while you work, thins out toward the box so the box floats on a calm
+// patch, parts under the cursor and carries the wake and ripples.
+// top..bot is the part of the box that is open; hints is the footer's span.
+func (m *Model) drawSea(top, bot int, hints [2]int) {
+	cv, l := m.cv, m.lay
+	R := m.reach()
 	dev := 1.0
 	if !m.reduce {
-		dev = smooth(0, 0.9, m.now)
+		dev = smooth(0, 0.5, m.now)
 	}
-	R := m.reach()
-	for row := 0; row < bandRows; row++ {
-		for col := start + (start+row)%2; col < stop; col += 2 {
+	bx0, bx1 := float64(l.bx0), float64(l.bx1+1)
+	by0, by1 := float64(top)*2, float64(bot+1)*2
+	for row := 0; row < cv.Rows; row++ {
+		for col := row % 2; col < cv.Cols; col += 2 {
+			if col >= l.bx0-1 && col <= l.bx1+1 && row >= top && row <= bot {
+				continue
+			}
+			if row == l.helpRow && col >= hints[0]-2 && col < hints[1]+2 {
+				continue
+			}
 			p := vec{float64(col) + 0.5, float64(row)*2 + 1}
+
+			// Distance to the box, in units, for the calm patch around it.
+			dx := math.Max(0, math.Max(bx0-p.X, p.X-bx1))
+			dy := math.Max(0, math.Max(by0-p.Y, p.Y-by1))
+			calm := 0.35 + 0.65*smooth(0.5, 6, math.Hypot(dx, dy))
+
 			src, lens := p, 0.0
 			if m.lensOn > 0 {
 				if d := math.Hypot(p.X-m.lens.X, p.Y-m.lens.Y); d < R {
@@ -114,11 +123,9 @@ func (m *Model) drawBand() {
 					}
 				}
 			}
-			// The sea: denser away from the wordmark, thinning at both ends.
-			across := (src.X - float64(start)) / math.Max(1, float64(stop-start))
-			edge := smooth(0, 0.35, across) * (1 - 0.6*smooth(0.8, 1, across))
-			swell := 0.5 + 0.5*math.Sin(src.X*0.16-m.swellT*1.7+1.8*math.Sin(src.X*0.041+m.swellT*0.55)+src.Y*0.45)
-			v := edge * (0.16 + 0.62*swell) * dev
+			t := m.swellT
+			swell := 0.5 + 0.5*math.Sin(src.X*0.12-t*1.5+1.7*math.Sin(src.Y*0.08+src.X*0.025+t*0.45)+src.Y*0.19)
+			v := (0.16 + 0.54*swell) * calm * dev
 
 			heat := m.heat[row*cv.Cols+col]
 			wave := 0.0
@@ -137,28 +144,101 @@ func (m *Model) drawBand() {
 			case v > 0.34:
 				g = ramp[1]
 			}
-			c := dots.Lerp(cAsh, dots.Lerp(cMist, cPaper, 0.6), float32(smooth(0.05, 0.85, v)))
+			c := dots.Lerp(dots.Lerp(cAsh, cMist, 0.35), dots.Lerp(cMist, cPaper, 0.4), float32(smooth(0.1, 0.9, v)))
 			c = dots.Lerp(c, cSignal, float32(math.Min(1, lens*0.8+heat*1.2+wave)*0.9))
 			cv.Glyph(col, row, g, c)
 		}
 	}
-
-	// The name, tracked out like the poster's labels, prints in from dots.
-	show := 1.0
-	if !m.reduce {
-		show = smooth(0.05, 0.6, m.now)
-	}
-	m.print(2, 1, wordmark, cPaper, show)
-
-	sx := cv.Cols - 2 - sumW
-	m.write(sx, 1, cv.Cols-2, 1, summary...)
-	hx := cv.Cols - 2 - len([]rune(host))
-	if host != "" {
-		m.write(max(stop+3, hx), 2, cv.Cols-2, 1, span{host, cMist})
-	}
 }
 
-// summary is the counts in the band: "4 running · 2 stopped · 9 images".
+// drawBox draws the manifest and returns the rows that are open.
+func (m *Model) drawBox() (top, bot int) {
+	cv, l := m.cv, m.lay
+	for row := l.by0; row <= l.by1; row++ {
+		for col := l.bx0; col <= l.bx1; col++ {
+			cv.Back(col, row, cPanel)
+		}
+	}
+	m.drawHeader()
+	m.drawTabs()
+	m.drawList()
+	if m.showKeys {
+		m.drawKeys()
+	} else {
+		m.drawDetail()
+	}
+
+	// The box unfolds from its middle: rows outside the open part are
+	// cleared, and the frame is drawn at the edges of what is open.
+	h := l.by1 - l.by0 + 1
+	open := max(2, int(math.Round(float64(h)*m.unfold())))
+	top = l.by0 + (h-open)/2
+	bot = top + open - 1
+	for row := l.by0; row <= l.by1; row++ {
+		if row < top || row > bot {
+			for col := l.bx0; col <= l.bx1; col++ {
+				cv.ClearCell(col, row)
+			}
+		}
+	}
+	m.drawFrame(top, bot)
+	return top, bot
+}
+
+// drawFrame is the hairline border, with the name set into the top edge and
+// the sync state into the bottom one.
+func (m *Model) drawFrame(top, bot int) {
+	cv, l := m.cv, m.lay
+	for col := l.bx0 + 1; col < l.bx1; col++ {
+		cv.Glyph(col, top, '─', cFrame)
+		cv.Glyph(col, bot, '─', cFrame)
+	}
+	for row := top + 1; row < bot; row++ {
+		cv.Glyph(l.bx0, row, '│', cFrame)
+		cv.Glyph(l.bx1, row, '│', cFrame)
+	}
+	cv.Glyph(l.bx0, top, '╭', cFrame)
+	cv.Glyph(l.bx1, top, '╮', cFrame)
+	cv.Glyph(l.bx0, bot, '╰', cFrame)
+	cv.Glyph(l.bx1, bot, '╯', cFrame)
+	if top < l.ruleRow && bot > l.ruleRow {
+		cv.Glyph(l.bx0, l.ruleRow, '├', cFrame)
+		cv.Glyph(l.bx1, l.ruleRow, '┤', cFrame)
+	}
+	if m.unfold() < 0.7 {
+		return
+	}
+
+	show := 1.0
+	if !m.reduce {
+		show = smooth(boxOpen*0.7, boxOpen+0.4, m.now)
+	}
+	m.write(l.bx0+2, top, l.bx1-2, show, span{" " + wordmark + " ", cPaper})
+	if m.host != "" {
+		host := " " + clip(m.host, (l.bx1-l.bx0)/2) + " "
+		m.write(l.bx1-2-len([]rune(host)), top, l.bx1-1, 1, span{host, cMist})
+	}
+
+	var sync []span
+	switch {
+	case m.loading > 0:
+		g := [...]rune{'·', '•', '●', '•'}[int(m.now*8)%4]
+		sync = []span{{" " + string(g) + " syncing ", cMist}}
+	case m.cErr != nil || m.iErr != nil:
+		sync = []span{{" docker unreachable ", cSignal}}
+	case !m.synced.IsZero():
+		sync = []span{{" synced " + m.synced.Format("15:04:05") + " ", cMist}}
+	}
+	m.write(l.bx0+2, bot, l.bx1-2, 1, sync...)
+}
+
+// drawHeader is the summary line at the top of the box.
+func (m *Model) drawHeader() {
+	l := m.lay
+	m.write(l.glyphX, l.summaryRow, l.inR, 1, m.summary()...)
+}
+
+// summary is the counts: "4 running · 2 need a look · 11 stopped · 9 images".
 func (m *Model) summary() []span {
 	switch {
 	case m.cErr != nil && !m.cLoaded:
@@ -188,9 +268,6 @@ func (m *Model) summary() []span {
 	if m.iLoaded {
 		out = append(out, span{"  ·  ", cAsh}, span{fmt.Sprint(len(m.images)), cPaper}, span{" images", cMist})
 	}
-	if m.cv != nil && m.cv.Cols < 100 && len(out) > 6 {
-		out = out[:len(out)-3] // keep the band breathing room on small terminals
-	}
 	return out
 }
 
@@ -211,7 +288,7 @@ func (m *Model) count(s section) string {
 // tabSpans is where each tab's label sits on the tab row, [from, to).
 func (m *Model) tabSpans() [numTabs][2]int {
 	var out [numTabs][2]int
-	x := 2
+	x := m.lay.glyphX
 	for t := range numTabs {
 		w := len(tabNames[t]) + 1 + len(m.count(t))
 		out[t] = [2]int{x, x + w}
@@ -227,16 +304,15 @@ func (m *Model) drawTabs() {
 		if section(t) == m.sec {
 			name = cPaper
 		}
-		m.write(s[0], l.tabRow, cv.Cols, 1, span{tabNames[t], name}, span{" " + m.count(section(t)), cMist})
+		m.write(s[0], l.tabRow, l.inR, 1, span{tabNames[t], name}, span{" " + m.count(section(t)), cMist})
 	}
 	if m.filter != "" && !m.filtering {
-		f := clip(m.filter, 24)
-		x := cv.Cols - 2 - len([]rune(f)) - len("/  ") - len("   esc clear")
-		m.write(x, l.tabRow, cv.Cols-2, 1, span{"/ ", cSignal}, span{f, cPaper}, span{"   esc clear", cMist})
+		parts := []span{{"/ ", cSignal}, {clip(m.filter, 20), cPaper}, {"   esc clear", cMist}}
+		m.write(l.inR-width(parts), l.tabRow, l.inR, 1, parts...)
 	}
 
-	for c := 0; c < cv.Cols; c++ {
-		cv.Glyph(c, l.ruleRow, '─', cAsh)
+	for c := l.bx0 + 1; c < l.bx1; c++ {
+		cv.Glyph(c, l.ruleRow, '─', cFrame)
 	}
 	for c := int(math.Round(m.tabX[0])); c < int(math.Round(m.tabX[1])); c++ {
 		cv.Glyph(c, l.ruleRow, '━', cSignal)
@@ -244,15 +320,17 @@ func (m *Model) drawTabs() {
 }
 
 func (m *Model) columns() []placed {
-	return place(sectionColumns[m.sec], textCol, m.cv.Cols-textCol-2)
+	l := m.lay
+	return place(sectionColumns[m.sec], l.textX, l.inR-l.textX)
 }
 
-// rowProgress is how far a list row has printed in (1 = done).
+// rowProgress is how far a list row has printed in (1 = done). Nothing
+// prints before the box has opened.
 func (m *Model) rowProgress(id string, vi int) float64 {
 	if m.reduce {
 		return 1
 	}
-	b := m.sectionBorn + float64(vi)*printStagger
+	b := math.Max(m.sectionBorn, boxOpen*0.8) + float64(vi)*printStagger
 	if t, ok := m.born[id]; ok && t > b {
 		b = t
 	}
@@ -267,7 +345,7 @@ func (m *Model) drawList() {
 		if c.right {
 			x = c.x + c.w - len(c.title)
 		}
-		m.write(x, l.headRow, cv.Cols-2, 1, span{c.title, cMist})
+		m.write(x, l.headRow, l.inR, 1, span{c.title, cMist})
 	}
 
 	rows := m.rows(m.sec)
@@ -319,15 +397,13 @@ func (m *Model) drawList() {
 		case r0 + 1:
 			sel = f
 		}
-		bg := cNight
+		bg := cPanel
 		if vi == m.hover {
 			bg = cRaise
 		}
 		bg = dots.Lerp(bg, cLift, float32(sel))
-		if bg != cNight {
-			for c := 0; c < cv.Cols-1; c++ {
-				cv.Back(c, y, bg)
-			}
+		for c := l.bx0 + 1; c < l.bx1; c++ {
+			cv.Back(c, y, bg)
 		}
 		p := m.rowProgress(r.id, vi)
 
@@ -343,7 +419,7 @@ func (m *Model) drawList() {
 					g = '◉'
 				}
 			}
-			m.print(glyphCol, y, string(g), gc, p)
+			m.print(l.glyphX, y, string(g), gc, p)
 		}
 
 		for _, c := range cols {
@@ -359,8 +435,8 @@ func (m *Model) drawList() {
 	// The selection bar: Braille dots, so it glides in quarter-row steps.
 	y0 := int(math.Round((float64(l.listTop) + m.visPos) * 4))
 	for dy := 0; dy < 4; dy++ {
-		cv.Dot(markCol*2, y0+dy, cSignal, 3)
-		cv.Dot(markCol*2+1, y0+dy, cSignal, 3)
+		cv.Dot(l.markX*2, y0+dy, cSignal, 3)
+		cv.Dot(l.markX*2+1, y0+dy, cSignal, 3)
 	}
 
 	// Scrollbar, only when the list doesn't fit.
@@ -368,11 +444,11 @@ func (m *Model) drawList() {
 		thumb := max(1, l.listRows*l.listRows/n)
 		at := off * (l.listRows - thumb) / (n - l.listRows)
 		for i := 0; i < l.listRows; i++ {
-			g, c := '│', cAsh
+			g, c := '│', cFrame
 			if i >= at && i < at+thumb {
 				g, c = '┃', cMist
 			}
-			cv.Glyph(cv.Cols-1, l.listTop+i, g, c)
+			cv.Glyph(l.bx1-1, l.listTop+i, g, c)
 		}
 	}
 }
@@ -404,7 +480,7 @@ func (m *Model) note(lines ...span) {
 		if i >= l.listRows {
 			break
 		}
-		m.write(textCol, l.listTop+1+i, m.cv.Cols-2, p, s)
+		m.write(l.textX, l.listTop+1+i, l.inR, p, s)
 	}
 }
 
@@ -425,42 +501,47 @@ func (m *Model) skeleton(cols []placed) {
 	}
 }
 
-// drawDetail is the panel under the list: everything about the selection.
-func (m *Model) drawDetail() {
-	cv, l := m.cv, m.lay
-	for c := 1; c < cv.Cols-1; c += 2 {
-		cv.Glyph(c, l.detailRule, '·', cAsh)
+// dottedRule is a line of halftone dots across the box.
+func (m *Model) dottedRule(row int) {
+	l := m.lay
+	for c := l.bx0 + 2; c < l.bx1-1; c += 2 {
+		m.cv.Glyph(c, row, '·', cFrame)
 	}
+}
+
+// drawDetail is the panel at the bottom of the box: the selection in full.
+func (m *Model) drawDetail() {
+	l := m.lay
+	m.dottedRule(l.detailRule)
 	r, ok := m.selected()
 	if !ok || m.sec == podsTab {
 		return
 	}
 	p := 1.0
 	if !m.reduce {
-		p = (m.now - m.detailBorn) / 0.18
+		p = (m.now - math.Max(m.detailBorn, boxOpen*0.8)) / 0.18
 	}
-	end := cv.Cols - 2
-	y := l.detailTop
+	x, end, y := l.glyphX, l.inR, l.detailTop
 	label := func(s string) span { return span{s + "  ", cMist} }
 	gap := span{"     ", cMist}
 
 	switch {
 	case r.c != nil:
 		c := r.c
-		m.write(glyphCol, y, end, p, span{c.Name, cPaper}, span{"  " + shortID(c.ID), cMist}, span{"  " + c.Image, dots.Lerp(cMist, cPaper, 0.55)})
+		m.write(x, y, end, p, span{c.Name, cPaper}, span{"  " + shortID(c.ID), cMist}, span{"  " + c.Image, dots.Lerp(cMist, cPaper, 0.55)})
 		health := c.Health
 		if health == "" {
 			health = "no healthcheck"
 		}
-		m.write(glyphCol, y+1, end, p,
+		m.write(x, y+1, end, p,
 			label("STATE"), span{string(r.look.Glyph) + " " + r.look.Word, dots.Hex(r.look.Color)}, gap,
 			label("HEALTH"), span{health, cPaper})
-		m.write(glyphCol, y+2, end, p, label("STATUS"), span{c.Status, cPaper})
+		m.write(x, y+2, end, p, label("STATUS"), span{c.Status, cPaper})
 		ports := c.Ports
 		if ports == "" {
 			ports = "none published"
 		}
-		m.write(glyphCol, y+3, end, p, label("PORTS"), span{ports, cPaper})
+		m.write(x, y+3, end, p, label("PORTS"), span{ports, cPaper})
 
 	case r.img != nil:
 		im := r.img
@@ -468,83 +549,69 @@ func (m *Model) drawDetail() {
 		if len(im.Tags) > 0 {
 			name = im.Tags[0]
 		}
-		m.write(glyphCol, y, end, p, span{name, cPaper}, span{"  " + im.ShortID, cMist})
+		m.write(x, y, end, p, span{name, cPaper}, span{"  " + im.ShortID, cMist})
 		created := "unknown"
 		if !im.CreatedAt.IsZero() {
 			created = ago(im.CreatedAt, m.wall) + " · " + im.CreatedAt.Format("2006-01-02")
 		}
-		m.write(glyphCol, y+1, end, p, label("SIZE"), span{humanSize(im.Size), cPaper}, gap, label("CREATED"), span{created, cPaper})
+		m.write(x, y+1, end, p, label("SIZE"), span{humanSize(im.Size), cPaper}, gap, label("CREATED"), span{created, cPaper})
 		next := y + 2
 		switch {
 		case len(im.Tags) > 1:
-			m.write(glyphCol, next, end, p, label("ALSO"), span{strings.Join(im.Tags[1:], ", "), cPaper})
+			m.write(x, next, end, p, label("ALSO"), span{strings.Join(im.Tags[1:], ", "), cPaper})
 			next++
 		case len(im.Tags) == 0:
-			m.write(glyphCol, next, end, p, label("UNTAGGED"), span{"a dangling image, safe to prune if no container uses it", cMist})
+			m.write(x, next, end, p, label("UNTAGGED"), span{"a dangling image, safe to prune if no container uses it", cMist})
 			next++
 		}
 		if len(im.Digests) > 0 {
-			m.write(glyphCol, next, end, p, label("DIGEST"), span{im.Digests[0], cMist})
+			m.write(x, next, end, p, label("DIGEST"), span{im.Digests[0], cMist})
 		}
 	}
 }
 
 // drawKeys replaces the detail panel with every key binding.
 func (m *Model) drawKeys() {
-	cv, l := m.cv, m.lay
-	for c := 1; c < cv.Cols-1; c += 2 {
-		cv.Glyph(c, l.detailRule, '·', cAsh)
-	}
-	colW := min(30, (cv.Cols-glyphCol-2)/len(m.keys.FullHelp()))
+	l := m.lay
+	m.dottedRule(l.detailRule)
+	colW := min(30, (l.inR-l.glyphX)/len(m.keys.FullHelp()))
 	for ci, group := range m.keys.FullHelp() {
-		x := glyphCol + ci*colW
+		x := l.glyphX + ci*colW
 		for ri, b := range group {
 			h := b.Help()
-			m.write(x, l.detailTop+ri, min(x+colW-1, cv.Cols-2), 1,
+			m.write(x, l.detailTop+ri, min(x+colW-1, l.inR), 1,
 				span{fmt.Sprintf("%-5s", h.Key), cSignal}, span{" " + h.Desc, cMist})
 		}
 	}
 }
 
-// drawFooter is the key hints on the left and the sync state on the right.
-func (m *Model) drawFooter() {
+// drawFooter centers the key hints (or the filter input) under the box and
+// returns the columns they cover, so the sea leaves them a clear strip.
+func (m *Model) drawFooter() [2]int {
 	cv, l := m.cv, m.lay
-	y := l.helpRow
-
-	var right []span
-	switch {
-	case m.loading > 0:
-		g := [...]rune{'·', '•', '●', '•'}[int(m.now*8)%4]
-		right = []span{{string(g) + " syncing", cMist}}
-	case m.cErr != nil || m.iErr != nil:
-		right = []span{{"docker unreachable", cSignal}}
-	case !m.synced.IsZero():
-		right = []span{{"synced " + m.synced.Format("15:04:05"), cMist}}
+	if m.unfold() < 1 {
+		return [2]int{}
 	}
-	rw := 0
-	for _, s := range right {
-		rw += len([]rune(s.s))
-	}
-	limit := cv.Cols - 2 - rw - 2
-	m.write(cv.Cols-2-rw, y, cv.Cols-2, 1, right...)
-
+	var parts []span
 	if m.filtering {
-		x := m.write(2, y, limit, 1, span{"/ ", cSignal}, span{m.filter, cPaper})
-		if int(m.now*2)%2 == 0 || m.reduce {
-			cv.Glyph(x, y, '▏', cSignal)
+		parts = []span{{"/ ", cSignal}, {m.filter, cPaper}, {"▏", cSignal}, {"    ", cMist},
+			{"enter", cSignal}, {" keep   ", cMist}, {"esc", cSignal}, {" clear", cMist}}
+		if int(m.now*2)%2 == 1 && !m.reduce {
+			parts[2].fg = cPanel // the caret blinks while the screen is awake
 		}
-		m.write(x+3, y, limit, 1, span{"enter", cSignal}, span{" keep   ", cMist}, span{"esc", cSignal}, span{" clear", cMist})
-		return
-	}
-	x := 2
-	for _, b := range m.keys.ShortHelp() {
-		h := b.Help()
-		w := len([]rune(h.Key)) + 1 + len([]rune(h.Desc))
-		if x+w > limit {
-			break
+	} else {
+		for _, b := range m.keys.ShortHelp() {
+			h := b.Help()
+			if len(parts) > 0 {
+				parts = append(parts, span{"    ", cMist})
+			}
+			parts = append(parts, span{h.Key, cSignal}, span{" " + h.Desc, cMist})
 		}
-		x = m.write(x, y, limit, 1, span{h.Key, cSignal}, span{" " + h.Desc, cMist}) + 3
 	}
+	w := min(width(parts), cv.Cols-4)
+	x := (cv.Cols - w) / 2
+	m.write(x, l.helpRow, x+w, 1, parts...)
+	return [2]int{x, x + w}
 }
 
 func shortID(id string) string {

@@ -2,11 +2,12 @@
 // moored on this machine, in three sections (containers, images, and
 // Kubernetes pods, which are not connected yet).
 //
-// It is drawn on the dots canvas, like the splash, so it can share the
-// poster's language: a halftone band across the top that reacts to the
-// cursor, rows that print in from halftone dots, a selection that glides,
-// and running containers that breathe while you work. All of it settles
-// when you stop touching the keyboard and mouse, and the frame loop stops.
+// The manifest is a box floating in the middle of a full-screen halftone
+// sea. The sea swells while you work, parts under the cursor, leaves an
+// orange wake and carries ripples; the box unfolds from its middle when the
+// screen opens, rows print in from halftone dots, the selection glides, and
+// running containers breathe. All of it settles when you stop touching the
+// keyboard and mouse, and the frame loop stops.
 package dashboard
 
 import (
@@ -34,8 +35,8 @@ const (
 	calmFor      = 1.5  // how long settling takes
 	printDur     = 0.22 // one row printing in
 	printStagger = 0.018
-	flashDur     = 1.6 // a container that changed state glows this long
-	bandRows     = 3
+	flashDur     = 1.6  // a container that changed state glows this long
+	boxOpen      = 0.45 // seconds for the box to unfold
 	minCols      = 60
 	minRows      = 16
 )
@@ -58,6 +59,8 @@ var (
 	cMist   = dots.Hex(theme.Mist)
 	cSignal = dots.Hex(theme.Signal)
 	cRaise  = dots.Hex(theme.Raise)
+	cPanel  = dots.Hex(theme.Panel)
+	cFrame  = dots.Hex(theme.Frame)
 	cLift   = dots.Hex(theme.Lift)
 )
 
@@ -68,12 +71,21 @@ type ripple struct {
 	age float64
 }
 
-// layout holds the rows each part of the screen sits on.
+// layout is the box and the rows each part of it sits on.
 type layout struct {
-	tabRow, ruleRow, headRow int
-	listTop, listRows        int
-	detailRule, detailTop    int
-	detailRows, helpRow      int
+	bx0, by0, bx1, by1    int // the box, border included
+	markX, glyphX, textX  int // selection bar, state glyph, first column
+	inR                   int // text stops before this column
+	summaryRow, tabRow    int
+	ruleRow, headRow      int
+	listTop, listRows     int
+	detailRule, detailTop int
+	detailRows, helpRow   int
+}
+
+// inBox reports whether a cell is on the box.
+func (l layout) inBox(col, row int) bool {
+	return col >= l.bx0 && col <= l.bx1 && row >= l.by0 && row <= l.by1
 }
 
 // Model is the dashboard. Create it with New.
@@ -285,7 +297,8 @@ func (m *Model) key(k tea.KeyMsg) tea.Cmd {
 		m.filtering = true
 	case key.Matches(k, ks.Refresh):
 		if m.cv != nil && !m.reduce {
-			m.ripples = append(m.ripples, ripple{at: vec{float64(m.cv.Cols) - 12, 3}})
+			l := m.lay
+			m.ripples = append(m.ripples, ripple{at: vec{float64(l.bx0+l.bx1) / 2, float64(l.by0 + l.by1)}})
 		}
 		return tea.Batch(m.Load(), m.kick())
 	case key.Matches(k, ks.Help):
@@ -306,19 +319,20 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 	m.poke()
+	l := m.lay
 	p := vec{float64(e.X) + 0.5, float64(e.Y)*2 + 1}
-	in := e.Y < bandRows
-	if in && !m.mouseIn {
+	box := l.inBox(e.X, e.Y)
+	if !box && !m.mouseIn {
 		m.mouse, m.lens = p, p
 	}
-	if in {
+	if !box {
 		m.trail(m.mouse, p)
 	}
-	m.mouse, m.mouseIn = p, in
+	m.mouse, m.mouseIn = p, !box
+	in := !box
 
-	l := m.lay
 	m.hover = -1
-	if vi := e.Y - l.listTop; vi >= 0 && vi < l.listRows && m.off[m.sec]+vi < len(m.rows(m.sec)) {
+	if vi := e.Y - l.listTop; box && vi >= 0 && vi < l.listRows && m.off[m.sec]+vi < len(m.rows(m.sec)) {
 		m.hover = vi
 	}
 
@@ -329,7 +343,7 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 		m.move(1)
 	case e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft:
 		switch {
-		case e.Y == l.tabRow:
+		case box && e.Y == l.tabRow:
 			for t, s := range m.tabSpans() {
 				if e.X >= s[0] && e.X < s[1] {
 					m.switchTo(section(t))
@@ -466,7 +480,7 @@ func (m *Model) setImages(is []models.ImageModel) {
 // resize lays the screen out for a new terminal size.
 func (m *Model) resize(cols, rows int) {
 	m.cv = dots.NewCanvas(cols, rows)
-	m.heat = make([]float64, cols*bandRows)
+	m.heat = make([]float64, cols*rows)
 	m.relayout()
 	m.visPos = float64(m.sel[m.sec] - m.off[m.sec])
 	s := m.tabSpans()[m.sec]
@@ -475,18 +489,38 @@ func (m *Model) resize(cols, rows int) {
 
 // relayout places the rows; the panel under the list grows for the keys sheet.
 func (m *Model) relayout() {
-	rows := m.cv.Rows
+	W, H := m.cv.Cols, m.cv.Rows
 	l := &m.lay
-	l.tabRow = bandRows
-	l.ruleRow = bandRows + 1
-	l.headRow = bandRows + 2
-	l.listTop = bandRows + 3
-	l.helpRow = rows - 1
+	bw, bh := W-4, H-4
+	// The box takes most of the screen, keeping a few cells of sea around
+	// it so the background still shows; on very large terminals it stops
+	// growing and the sea takes the rest.
+	if W > 84 {
+		bw = min(W-6, 180)
+	}
+	if H > 30 {
+		bh = min(H-5, 52)
+	}
+	l.bx0 = (W - bw) / 2
+	l.bx1 = l.bx0 + bw - 1
+	l.by0 = (H - bh - 2) / 2 // the key hints sit under the box
+	l.by1 = l.by0 + bh - 1
+	l.helpRow = min(H-1, l.by1+2)
+	l.markX, l.glyphX, l.textX = l.bx0+1, l.bx0+3, l.bx0+5
+	l.inR = l.bx1 - 1
+
+	y := l.by0 + 1
+	l.summaryRow = y
+	y++
+	if bh >= 26 {
+		y++ // room to breathe on tall terminals
+	}
+	l.tabRow, l.ruleRow, l.headRow, l.listTop = y, y+1, y+2, y+3
 	l.detailRows = 4
 	if m.showKeys {
 		l.detailRows = 6
 	}
-	l.detailTop = rows - 2 - l.detailRows
+	l.detailTop = l.by1 - l.detailRows
 	l.detailRule = l.detailTop - 1
 	l.listRows = max(1, l.detailRule-l.listTop)
 
@@ -503,7 +537,7 @@ func (m *Model) trail(a, b vec) {
 	for i := 0; i <= n; i++ {
 		f := float64(i) / float64(n)
 		p := vec{a.X + (b.X-a.X)*f, a.Y + (b.Y-a.Y)*f}
-		for row := max(0, int((p.Y-R)/2)); row <= min(bandRows-1, int((p.Y+R)/2)); row++ {
+		for row := max(0, int((p.Y-R)/2)); row <= min(m.cv.Rows-1, int((p.Y+R)/2)); row++ {
 			for col := max(0, int(p.X-R)); col <= min(cols-1, int(p.X+R)); col++ {
 				d := math.Hypot(float64(col)+0.5-p.X, float64(row)*2+1-p.Y)
 				if d < R {
@@ -517,7 +551,7 @@ func (m *Model) trail(a, b vec) {
 }
 
 // reach is the lens radius, in units (a cell is 1 wide and 2 tall).
-func (m *Model) reach() float64 { return math.Max(5, float64(m.cv.Cols)*0.05) }
+func (m *Model) reach() float64 { return math.Max(6, float64(m.cv.Cols)*0.06) }
 
 // ambient is 1 while someone is working and eases to 0 when they stop.
 func (m *Model) ambient() float64 {
