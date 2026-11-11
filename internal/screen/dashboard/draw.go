@@ -25,6 +25,7 @@ func (m *Model) View() string {
 	top, bot := m.drawBox()
 	hints := m.drawFooter()
 	m.drawSea(top, bot, hints)
+	m.drawShip()
 	return m.cv.Render(cNight)
 }
 
@@ -113,6 +114,9 @@ func (m *Model) drawSea(top, bot int, hints [2]int) {
 			dx := math.Max(0, math.Max(bx0-p.X, p.X-bx1))
 			dy := math.Max(0, math.Max(by0-p.Y, p.Y-by1))
 			calm := 0.35 + 0.65*smooth(0.5, 6, math.Hypot(dx, dy))
+			if m.ship.on {
+				calm = math.Min(calm, smooth(0, 4, m.ship.clearing(p)))
+			}
 
 			src, lens := p, 0.0
 			if m.lensOn > 0 {
@@ -128,11 +132,7 @@ func (m *Model) drawSea(top, bot int, hints [2]int) {
 			v := (0.16 + 0.54*swell) * calm * dev
 
 			heat := m.heat[row*cv.Cols+col]
-			wave := 0.0
-			for _, r := range m.ripples {
-				d := math.Hypot(p.X-r.at.X, p.Y-r.at.Y)
-				wave += math.Exp(-math.Pow((d-r.age*70)/3, 2)) * (1 - r.age/1.8)
-			}
+			wave := m.wave(p)
 			v += lens*0.25 + heat*0.55 + wave*0.6
 			if v < 0.08 {
 				continue
@@ -609,7 +609,7 @@ func (m *Model) drawFooter() [2]int {
 		}
 	}
 	w := min(width(parts), cv.Cols-4)
-	x := (cv.Cols - w) / 2
+	x := max(2, min(cv.Cols-2-w, (l.bx0+l.bx1+1)/2-w/2))
 	m.write(x, l.helpRow, x+w, 1, parts...)
 	return [2]int{x, x + w}
 }

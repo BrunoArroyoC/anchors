@@ -17,3 +17,12 @@ var HeroPNG []byte
 //
 //go:embed title.png
 var TitlePNG []byte
+
+// ShipPNG is a container ship seen head-on, symmetrical, its V bow rim-lit
+// on both sides, with containers stacked above it in a grid (four tiers six
+// wide and four on top), on pure black with a reflection (1000x1357). The
+// dashboard stipples it and redraws the containers in code, one per Docker
+// container.
+//
+//go:embed ship.png
+var ShipPNG []byte

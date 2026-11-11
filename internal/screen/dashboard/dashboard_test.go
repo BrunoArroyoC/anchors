@@ -130,6 +130,17 @@ func TestScreens(t *testing.T) {
 			t.Fatalf("%dx%d: still ticking at rest", cols, rows)
 		}
 
+		// On terminals wide enough for the ship, clicking a box of cargo
+		// selects that container.
+		if m.ship.on {
+			b := m.ship.slots[3]
+			m.Update(tea.MouseMsg{X: (b.x0 + b.x1) / 4, Y: (b.y0 + b.y1) / 8, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			if r, ok := m.selected(); !ok || r.id != m.containers[3].ID {
+				t.Fatalf("%dx%d: clicking cargo box 3 selected %q, want %q", cols, rows, r.id, m.containers[3].ID)
+			}
+			m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+		}
+
 		// Work the list and sweep the cursor through the band.
 		key("down")
 		key("down")
