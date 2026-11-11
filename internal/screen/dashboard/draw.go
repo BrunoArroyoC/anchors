@@ -24,8 +24,7 @@ func (m *Model) View() string {
 	m.cv.Clear()
 	top, bot := m.drawBox()
 	hints := m.drawFooter()
-	m.drawSea(top, bot, hints)
-	m.drawShip(top, bot)
+	m.drawScene(top, bot, hints)
 	return m.cv.Render(cNight)
 }
 
@@ -85,67 +84,6 @@ func (m *Model) unfold() float64 {
 		return 1
 	}
 	return smooth(0, boxOpen, m.now)
-}
-
-// drawSea fills the screen around the box with the halftone: it swells
-// while you work, thins out toward the box so the box floats on a calm
-// patch, parts under the cursor and carries the wake and ripples.
-// top..bot is the part of the box that is open; hints is the footer's span.
-func (m *Model) drawSea(top, bot int, hints [2]int) {
-	cv, l := m.cv, m.lay
-	R := m.reach()
-	dev := 1.0
-	if !m.reduce {
-		dev = smooth(0, 0.5, m.now)
-	}
-	bx0, bx1 := float64(l.bx0), float64(l.bx1+1)
-	by0, by1 := float64(top)*2, float64(bot+1)*2
-	for row := 0; row < cv.Rows; row++ {
-		for col := row % 2; col < cv.Cols; col += 2 {
-			if col >= l.bx0-1 && col <= l.bx1+1 && row >= top && row <= bot {
-				continue
-			}
-			if row == l.helpRow && col >= hints[0]-2 && col < hints[1]+2 {
-				continue
-			}
-			p := vec{float64(col) + 0.5, float64(row)*2 + 1}
-
-			// Distance to the box, in units, for the calm patch around it.
-			dx := math.Max(0, math.Max(bx0-p.X, p.X-bx1))
-			dy := math.Max(0, math.Max(by0-p.Y, p.Y-by1))
-			calm := 0.35 + 0.65*smooth(0.5, 6, math.Hypot(dx, dy))
-
-			src, lens := p, 0.0
-			if m.lensOn > 0 {
-				if d := math.Hypot(p.X-m.lens.X, p.Y-m.lens.Y); d < R {
-					lens = (1 - d/R) * (1 - d/R) * m.lensOn
-					if !m.reduce {
-						src = vec{m.lens.X + (p.X-m.lens.X)*(1-0.45*lens), m.lens.Y + (p.Y-m.lens.Y)*(1-0.45*lens)}
-					}
-				}
-			}
-			t := m.swellT
-			swell := 0.5 + 0.5*math.Sin(src.X*0.12-t*1.5+1.7*math.Sin(src.Y*0.08+src.X*0.025+t*0.45)+src.Y*0.19)
-			v := (0.16 + 0.54*swell) * calm * dev
-
-			heat := m.heat[row*cv.Cols+col]
-			wave := m.wave(p)
-			v += lens*0.25 + heat*0.55 + wave*0.6
-			if v < 0.08 {
-				continue
-			}
-			g := ramp[0]
-			switch {
-			case v > 0.62:
-				g = ramp[2]
-			case v > 0.34:
-				g = ramp[1]
-			}
-			c := dots.Lerp(dots.Lerp(cAsh, cMist, 0.35), dots.Lerp(cMist, cPaper, 0.4), float32(smooth(0.1, 0.9, v)))
-			c = dots.Lerp(c, cSignal, float32(math.Min(1, lens*0.8+heat*1.2+wave)*0.9))
-			cv.Glyph(col, row, g, c)
-		}
-	}
 }
 
 // drawBox draws the manifest and returns the rows that are open.
@@ -227,9 +165,6 @@ func (m *Model) drawFrame(top, bot int) {
 		sync = []span{{" synced " + m.synced.Format("15:04:05") + " ", cMist}}
 	}
 	m.write(l.bx0+2, bot, l.bx1-2, 1, sync...)
-	if leg := m.legend(); leg != nil && width(sync)+width(leg)+8 < l.bx1-l.bx0 {
-		m.write(l.bx1-2-width(leg), bot, l.bx1-1, 1, leg...)
-	}
 }
 
 // drawHeader is the summary line at the top of the box.

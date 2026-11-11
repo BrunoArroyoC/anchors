@@ -18,11 +18,10 @@ var HeroPNG []byte
 //go:embed title.png
 var TitlePNG []byte
 
-// ShipPNG is a container ship seen head-on, symmetrical, its V bow rim-lit
-// on both sides, with containers stacked above it in a grid (four tiers six
-// wide and four on top), on pure black with a reflection (1000x1357). The
-// dashboard stipples it and redraws the containers in code, one per Docker
-// container.
+// LighthousePNG is a tall lighthouse on rocks, seen from the front, rim-lit
+// on both sides with a glowing lantern, on pure black (1000x1750). The
+// dashboard stipples it on the right of the screen and sends a beam from
+// its lantern.
 //
-//go:embed ship.png
-var ShipPNG []byte
+//go:embed lighthouse.png
+var LighthousePNG []byte

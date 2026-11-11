@@ -10,7 +10,7 @@ import (
 )
 
 // BenchmarkFrame200x55 measures one animated frame on a large terminal
-// with the ship, the sea and a full list.
+// with the lighthouse, its beam, the sky, the sea and a full list.
 func BenchmarkFrame200x55(b *testing.B) {
 	m := New(nil)
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 55})

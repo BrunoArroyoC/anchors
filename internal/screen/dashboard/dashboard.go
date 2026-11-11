@@ -2,12 +2,12 @@
 // moored on this machine, in three sections (containers, images, and
 // Kubernetes pods, which are not connected yet).
 //
-// The manifest is a box floating on a full-screen halftone sea, with a
-// container ship behind it as a watermark whose cargo is your containers. The sea swells while you work, parts under the cursor, leaves an
-// orange wake and carries ripples; the box unfolds from its middle when the
-// screen opens, rows print in from halftone dots, the selection glides, and
-// running containers breathe. All of it settles when you stop touching the
-// keyboard and mouse, and the frame loop stops.
+// The manifest is a logbook on the left of a night scene: stars over a
+// halftone sea in perspective, and a lighthouse on the rocks whose beam
+// swings to the container you select (orange when it needs a look). The
+// logbook unfolds when the screen opens and its rows print in; the sea
+// rolls, the stars twinkle and the beam drifts while you work, and all of
+// it settles when you stop, and the frame loop stops.
 package dashboard
 
 import (
@@ -97,9 +97,11 @@ type Model struct {
 	reduce  bool
 	visible bool // false while the splash is still up: data loads, nothing ticks
 
-	cv   *dots.Canvas
-	lay  layout
-	ship ship
+	cv      *dots.Canvas
+	lay     layout
+	scene   scene
+	beam    float64 // the beam's angle, radians; it swings to beamAngle
+	sweepAt float64 // when the last refresh sweep started
 
 	containers []models.DockerModel
 	images     []models.ImageModel
@@ -157,8 +159,8 @@ func New(docker *client.Client) *Model {
 	if docker != nil {
 		m.host = docker.DaemonHost()
 	}
-	if t, err := dots.LoadTone(assets.ShipPNG, 400, 1); err == nil {
-		m.ship.tone = t // without it the dashboard is the box alone
+	if t, err := dots.LoadTone(assets.LighthousePNG, 400, 1); err == nil {
+		m.scene.tone = t // without it the dashboard is the logbook under the stars
 	}
 	return m
 }
@@ -303,7 +305,12 @@ func (m *Model) key(k tea.KeyMsg) tea.Cmd {
 	case key.Matches(k, ks.Refresh):
 		if m.cv != nil && !m.reduce {
 			l := m.lay
-			m.ripples = append(m.ripples, ripple{at: vec{float64(l.bx0+l.bx1) / 2, float64(l.by0 + l.by1)}})
+			at := vec{float64(l.bx0+l.bx1) / 2, float64(l.by0 + l.by1)}
+			if m.scene.on {
+				at = vec{m.scene.lamp.X, float64(m.scene.horizon * 2)} // from the foot of the rocks
+				m.sweepAt = m.now                                      // and the beam sweeps the sea
+			}
+			m.ripples = append(m.ripples, ripple{at: at})
 		}
 		return tea.Batch(m.Load(), m.kick())
 	case key.Matches(k, ks.Help):
@@ -512,6 +519,9 @@ func (m *Model) resize(cols, rows int) {
 	m.visPos = float64(m.sel[m.sec] - m.off[m.sec])
 	s := m.tabSpans()[m.sec]
 	m.tabX = [2]float64{float64(s[0]), float64(s[1])}
+	if m.scene.on {
+		m.beam = m.beamAngle()
+	}
 }
 
 // relayout places the rows; the panel under the list grows for the keys sheet.
@@ -530,11 +540,13 @@ func (m *Model) relayout() {
 	}
 	l.bx0 = (W - bw) / 2
 	l.bx1 = l.bx0 + bw - 1
+	if right := m.scene.place(m.cv); right > 0 {
+		l.bx0, l.bx1 = 3, right // the logbook on the left, the lighthouse on the right
+	}
 	l.by0 = (H - bh - 2) / 2 // the key hints sit under the box
 	l.by1 = l.by0 + bh - 1
 	l.helpRow = min(H-1, l.by1+2)
 	l.markX, l.glyphX, l.textX = l.bx0+1, l.bx0+3, l.bx0+5
-	m.ship.place(m.cv, *l)
 	l.inR = l.bx1 - 1
 
 	y := l.by0 + 1
@@ -648,6 +660,18 @@ func (m *Model) step(t time.Time) {
 	m.ripples = live
 
 	m.swellT += dt * m.ambient()
+
+	if m.scene.on {
+		g := 1 - math.Exp(-dt*9)
+		if m.reduce {
+			g = 1
+		}
+		d := math.Remainder(m.beamAngle()-m.beam, 2*math.Pi)
+		m.beam += d * g
+		if math.Abs(d) < 0.002 {
+			m.beam = m.beamAngle()
+		}
+	}
 }
 
 // animating is true while anything on screen still moves.
@@ -658,6 +682,7 @@ func (m *Model) animating() bool {
 	s := m.tabSpans()[m.sec]
 	return m.loading > 0 || m.now < m.busyUntil || m.ambient() > 0 ||
 		m.visPos != float64(m.sel[m.sec]-m.off[m.sec]) ||
+		(m.scene.on && m.beam != m.beamAngle()) || (m.sweepAt > 0 && m.now-m.sweepAt < 0.9) ||
 		m.tabX != [2]float64{float64(s[0]), float64(s[1])} ||
 		m.heatMax > 0.02 || len(m.ripples) > 0 ||
 		(m.lensOn > 0 && m.lensOn < 1) ||
