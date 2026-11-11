@@ -11,8 +11,46 @@ const (
 	Paper  = "#efe9dd" // halftone highlights, wordmark, primary text
 	Ash    = "#26262c" // the faintest halftone dots
 	Mist   = "#85828c" // secondary text, labels
-	Signal = "#ff4f00" // international orange: cursor, keys, focus
+	Signal = "#ff4f00" // international orange: cursor, keys, focus, trouble
+	Raise  = "#17161b" // a row under the mouse
+	Lift   = "#2a1a13" // the selected row: night warmed by the signal
 )
+
+// Look is how a container state is drawn. It is the same on every screen:
+// alive is bright, stopped is quiet, and anything that needs a look is
+// signal orange.
+type Look struct {
+	Glyph rune
+	Color string
+	Word  string
+}
+
+// ContainerLook maps a Docker state and health status to its Look.
+func ContainerLook(state, health string) Look {
+	switch state {
+	case "running":
+		switch health {
+		case "unhealthy":
+			return Look{'●', Signal, "unhealthy"}
+		case "starting":
+			return Look{'◌', Paper, "starting"}
+		}
+		return Look{'●', Paper, "running"}
+	case "restarting":
+		return Look{'◌', Signal, "restarting"}
+	case "dead":
+		return Look{'×', Signal, "dead"}
+	case "paused":
+		return Look{'◐', Mist, "paused"}
+	case "exited":
+		return Look{'○', Mist, "exited"}
+	case "created":
+		return Look{'◌', Mist, "created"}
+	case "removing":
+		return Look{'◌', Mist, "removing"}
+	}
+	return Look{'○', Mist, state}
+}
 
 // Lip Gloss styles for regular text.
 var (

@@ -16,6 +16,8 @@ type Canvas struct {
 	pri        []uint8
 	glyph      []rune
 	gcol       []RGB
+	bg         []RGB
+	hasBg      []bool
 }
 
 // NewCanvas makes a canvas that fills cols x rows terminal cells.
@@ -23,7 +25,7 @@ func NewCanvas(cols, rows int) *Canvas {
 	n := cols * rows
 	return &Canvas{Cols: cols, Rows: rows, W: cols * 2, H: rows * 4,
 		bits: make([]uint8, n), col: make([]RGB, n), pri: make([]uint8, n),
-		glyph: make([]rune, n), gcol: make([]RGB, n)}
+		glyph: make([]rune, n), gcol: make([]RGB, n), bg: make([]RGB, n), hasBg: make([]bool, n)}
 }
 
 // Clear empties every cell.
@@ -31,6 +33,16 @@ func (c *Canvas) Clear() {
 	clear(c.bits)
 	clear(c.pri)
 	clear(c.glyph)
+	clear(c.hasBg)
+}
+
+// Back gives one cell its own background instead of the canvas ground.
+func (c *Canvas) Back(col, row int, bg RGB) {
+	if col < 0 || row < 0 || col >= c.Cols || row >= c.Rows {
+		return
+	}
+	i := row*c.Cols + col
+	c.bg[i], c.hasBg[i] = bg, true
 }
 
 // Braille dot bits, indexed [dy][dx] inside a cell.
@@ -75,17 +87,25 @@ func (c *Canvas) Text(col, row int, s string, fg RGB) {
 	}
 }
 
-// Render returns the frame as ANSI truecolor text on a solid background.
+// Render returns the frame as ANSI truecolor text on the bg ground (cells
+// given their own background with Back keep it).
 func (c *Canvas) Render(bg RGB) string {
 	var b strings.Builder
 	b.Grow(c.Cols * c.Rows * 8)
 	bgc := bg.u8()
 	for r := 0; r < c.Rows; r++ {
-		writeSGR(&b, 48, bgc)
-		var last [3]uint8
-		has := false
+		var last, lastBg [3]uint8
+		has, hasBg := false, false
 		for x := 0; x < c.Cols; x++ {
 			i := r*c.Cols + x
+			cb := bgc
+			if c.hasBg[i] {
+				cb = c.bg[i].u8()
+			}
+			if !hasBg || cb != lastBg {
+				writeSGR(&b, 48, cb)
+				lastBg, hasBg = cb, true
+			}
 			ch, fg := ' ', [3]uint8{}
 			switch {
 			case c.glyph[i] != 0:

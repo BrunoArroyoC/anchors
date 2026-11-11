@@ -42,6 +42,7 @@ func toDockerContainers(c container.Summary) models.DockerModel {
 	return models.DockerModel{
 		ID:     c.ID,
 		Name:   name,
+		Image:  c.Image,
 		Ports:  strings.Join(ports, ", "),
 		State:  string(c.State),
 		Status: c.Status,

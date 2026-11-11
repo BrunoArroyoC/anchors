@@ -26,7 +26,7 @@ Runs in a terminal next to the user's other dev and ops work. Talks to the local
 
 ## Capabilities and Constraints
 
-- Today: listing Docker containers (ID, name, ports, state, status, health).
+- Today: a dashboard listing Docker containers (name, image, state, status, health, ports) and images (repository, tag, ID, size, age), refreshed every 5s. Kubernetes pods have a section but no data yet.
 - Planned: container actions, logs, exec, stats; Kubernetes pods.
 - Must work at 80x24 minimum and assume a truecolor terminal, degrading gracefully otherwise.
 - Bubble Tea v1, Bubbles, Lip Gloss, Huh, Glamour. New libraries must be proposed to the author before they're added.
