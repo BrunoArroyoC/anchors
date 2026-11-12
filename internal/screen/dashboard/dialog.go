@@ -1,34 +1,46 @@
 package dashboard
 
-// The container dialog opens from a container row (click it, or enter). For
-// a stopped container it offers to start it; once the container runs, a
-// small terminal under the header follows what it prints, and the dialog
-// offers to stop it. A running container's output is followed straight away.
+// The dialog opens from a row (click it, or enter).
+//
+// For a container it offers what fits its state: a stopped one can be
+// started or removed; a running one can be stopped or restarted, and a small
+// terminal under the header follows what it prints.
+//
+// For an image it offers to remove it (with all its tags) or, when it has
+// several, to drop only the one in the row. When a container uses the image,
+// Docker won't remove it: the dialog says which container, and takes you
+// there.
+//
+// Removing asks for a second press first.
 
 import (
-	"math"
 	"regexp"
-	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"docker-tool/internal/bridge"
 	"docker-tool/internal/models"
-	"docker-tool/internal/screen/dots"
-	"docker-tool/internal/screen/theme"
+)
+
+type dlgKind int
+
+const (
+	containerDlg dlgKind = iota
+	imageDlg
 )
 
 type phase int
 
 const (
-	phaseReady    phase = iota // not running: the dialog offers to start it
-	phaseStarting              // start sent, Docker hasn't answered yet
-	phaseRunning               // running: its output is followed, the dialog offers to stop it
-	phaseFailed                // Docker refused the start; the terminal says why
-	phaseStopping              // stop sent; Docker answers once the container is down
+	phaseReady      phase = iota // container not running (or an image): its actions are offered
+	phaseStarting                // start sent, Docker hasn't answered yet
+	phaseRunning                 // running: its output is followed
+	phaseFailed                  // Docker refused the start; the terminal says why
+	phaseStopping                // stop sent; Docker answers once the container is down
+	phaseRestarting              // restart sent; same wait as a stop, then a start
+	phaseRemoving                // remove sent
 )
 
 const (
@@ -36,6 +48,7 @@ const (
 	lineIn      = 0.25 // a new log line printing in
 	maxLogLines = 2000 // older lines are dropped
 	maxLogRunes = 2000 // a longer line is cut
+	toastFor    = 3.0  // seconds a "removed web" note stays under the box
 )
 
 type lineKind int
@@ -53,9 +66,33 @@ type logLine struct {
 	at   float64 // when it arrived, for printing in
 }
 
-// dialog is the open container dialog.
+// action is something a dialog button does.
+type action int
+
+const (
+	actNone action = iota
+	actStart
+	actStop
+	actRestart
+	actRemove
+	actUntag
+	actGoTo // to the container that uses the image
+)
+
+// button is one of the dialog's actions. loud is the one to do next
+// (orange); the others are quiet.
+type button struct {
+	act   action
+	label string
+	icon  rune // drawn in colour over the label's first glyph
+	loud  bool
+}
+
+// dialog is the open dialog, for a container or an image.
 type dialog struct {
+	kind    dlgKind
 	c       models.DockerModel // refreshed with the list
+	img     models.ImageModel  // refreshed with the list
 	phase   phase
 	born    float64
 	phaseAt float64
@@ -63,18 +100,74 @@ type dialog struct {
 	opening bool // OpenLogs sent, no answer yet
 	ended   bool // the output stream ended
 	logs    []logLine
-	back    int  // rows scrolled up from the newest; 0 follows the output
-	hover   int  // 1: the action button is under the mouse, 2: close
-	stopErr bool // the last stop failed; the terminal says why
+	back    int    // rows scrolled up from the newest; 0 follows the output
+	hover   action // button under the mouse
+	onClose bool   // the mouse is on esc ✕
+	armed   action // a remove waiting for its second press
+	failMsg string // "Docker didn't stop it." after a refused action
+	blocker string // ID of a container that uses the image
 }
 
-func (d *dialog) canStart() bool { return d.phase == phaseReady || d.phase == phaseFailed }
-func (d *dialog) canStop() bool  { return d.phase == phaseRunning }
-
-// busyPhase is true while Docker is working on a start or a stop.
-func (d *dialog) busyPhase() bool { return d.phase == phaseStarting || d.phase == phaseStopping }
+// busy is true while Docker is working on something the dialog asked.
+func (d *dialog) busy() bool {
+	switch d.phase {
+	case phaseStarting, phaseStopping, phaseRestarting, phaseRemoving:
+		return true
+	}
+	return false
+}
 
 func isUp(c models.DockerModel) bool { return c.State == "running" || c.State == "restarting" }
+
+// imageName is how an image is called on screen: its first tag.
+func imageName(im models.ImageModel) string {
+	if len(im.Tags) > 0 {
+		return im.Tags[0]
+	}
+	return "<none>"
+}
+
+// buttons are the actions the dialog offers right now, left to right.
+func (m *Model) buttons() []button {
+	d := m.dlg
+	if d.busy() {
+		return nil
+	}
+	rm := button{act: actRemove, label: " ✕  REMOVE ", icon: '✕'}
+	if d.armed == actRemove {
+		rm = button{act: actRemove, label: " ✕  CONFIRM REMOVE ", loud: true}
+	}
+	if d.kind == imageDlg {
+		var bs []button
+		if c, ok := m.containerByID(d.blocker); ok {
+			bs = append(bs, button{act: actGoTo, label: " →  GO TO " + c.Name + " ", loud: d.armed == actNone})
+		}
+		bs = append(bs, rm)
+		if len(d.img.Tags) > 1 {
+			bs = append(bs, button{act: actUntag, label: " −  UNTAG ", icon: '−'})
+		}
+		return bs
+	}
+	switch d.phase {
+	case phaseRunning:
+		return []button{{act: actStop, label: " ■  STOP ", icon: '■'}, {act: actRestart, label: " ↻  RESTART ", icon: '↻'}}
+	case phaseFailed:
+		return []button{{act: actStart, label: " ↻  RETRY ", loud: d.armed == actNone}, rm}
+	}
+	return []button{{act: actStart, label: " ▶  START ", loud: d.armed == actNone}, rm}
+}
+
+func (m *Model) offers(a action) bool {
+	if m.dlg == nil {
+		return false
+	}
+	for _, b := range m.buttons() {
+		if b.act == a {
+			return true
+		}
+	}
+	return false
+}
 
 // dlgLayout is where the dialog and its parts sit. It is centred on the
 // logbook, so the lighthouse beam still finds the selected row's edge.
@@ -82,17 +175,22 @@ type dlgLayout struct {
 	x0, y0, x1, y1    int
 	inL, inR          int // text runs from inL to before inR
 	headRow, stateRow int
-	actRow, ruleRow   int // actRow: the action button and what is happening
+	actRow, ruleRow   int // actRow: the buttons and what is happening
 	termTop, termRows int
-	termL, termR      int    // log text runs from termL to before termR
-	act, close        [3]int // a button's from, to (exclusive) and row
+	termL, termR      int // log text runs from termL to before termR
+	btns              []placedButton
+	sayX              int    // where the message after the buttons starts
+	close             [3]int // esc ✕: from, to (exclusive), row
+}
+
+type placedButton struct {
+	button
+	x0, x1 int
 }
 
 const (
-	startLabel = " ▶  START "
-	retryLabel = " ↻  RETRY "
-	stopLabel  = " ■  STOP  " // all three action labels are the same width
 	closeLabel = " esc ✕ "
+	busyWidth  = 10 // the halftone progress that stands in for the buttons
 )
 
 func (m *Model) dialogLayout() dlgLayout {
@@ -114,27 +212,67 @@ func (m *Model) dialogLayout() dlgLayout {
 	w.termTop = w.ruleRow + 1
 	w.termRows = max(1, w.y1-gap-w.termTop)
 	w.termL, w.termR = w.x0+5, w.x1-3
-	w.act = [3]int{w.inL, w.inL + len([]rune(startLabel)), w.actRow}
+
+	x := w.inL
+	if m.dlg != nil {
+		for _, b := range m.buttons() {
+			n := len([]rune(b.label))
+			w.btns = append(w.btns, placedButton{b, x, x + n})
+			x += n + 2
+		}
+		if m.dlg.busy() {
+			x += busyWidth + 2
+		}
+	}
+	w.sayX = x + 1
 	n := len([]rune(closeLabel))
 	w.close = [3]int{w.x1 - 2 - n, w.x1 - 2, w.y0}
 	return w
 }
 
-// openDialog opens the dialog for the selected container.
+// openDialog opens the dialog for the selected row.
 func (m *Model) openDialog() tea.Cmd {
 	r, ok := m.selected()
-	if !ok || r.c == nil {
+	if !ok || (r.c == nil && r.img == nil) {
 		return nil
 	}
 	m.closeDialog()
-	d := &dialog{c: *r.c, born: m.now, phaseAt: m.now}
+	d := &dialog{born: m.now, phaseAt: m.now}
 	m.dlg, m.hover = d, -1
 	m.busy(dialogOpen + 0.4)
+	if r.img != nil {
+		d.kind, d.img = imageDlg, *r.img
+		m.describeImage()
+		return nil
+	}
+	d.c = *r.c
 	if isUp(d.c) {
 		d.phase = phaseRunning
 		return m.openLogs()
 	}
 	return nil
+}
+
+// describeImage fills the image dialog's panel: its names, digests and who
+// uses it.
+func (m *Model) describeImage() {
+	im := m.dlg.img
+	for _, t := range im.Tags {
+		m.addLine(stdoutLine, t)
+	}
+	if len(im.Tags) == 0 {
+		m.addLine(infoLine, "no tags: a dangling image, removed by its ID")
+	}
+	for _, dg := range im.Digests {
+		m.addLine(infoLine, dg)
+	}
+	if users := m.imageUsers(im); len(users) > 0 {
+		names := make([]string, len(users))
+		for i, c := range users {
+			names[i] = c.Name
+		}
+		m.addLine(infoLine, "used by "+strings.Join(names, ", "))
+	}
 }
 
 func (m *Model) closeDialog() {
@@ -153,77 +291,188 @@ func (m *Model) openLogs() tea.Cmd {
 	return bridge.OpenLogs(m.docker, d.c.ID)
 }
 
-// startContainer asks Docker to start the dialog's container. The terminal
-// starts empty: the stream that opens next brings the recent output.
-func (m *Model) startContainer() tea.Cmd {
+// fresh resets a container dialog for a new run of the container: no output,
+// no errors. The stream that opens next brings the recent output.
+func (m *Model) fresh(p phase) {
 	d := m.dlg
-	if d == nil || !d.canStart() {
-		return nil
-	}
 	if d.stream != nil {
 		d.stream.Close()
 	}
-	*d = dialog{c: d.c, born: d.born, phase: phaseStarting, phaseAt: m.now}
-	if m.docker == nil {
-		return nil
-	}
-	return bridge.StartContainer(m.docker, d.c.ID)
+	*d = dialog{kind: d.kind, c: d.c, img: d.img, born: d.born, phase: p, phaseAt: m.now}
 }
 
-// stopContainer asks Docker to stop the dialog's container. The output stays
-// open meanwhile, so whatever it prints while shutting down shows up.
-func (m *Model) stopContainer() tea.Cmd {
+// do runs a button's action, if the dialog offers it now.
+func (m *Model) do(a action) tea.Cmd {
 	d := m.dlg
-	if d == nil || !d.canStop() {
+	if d == nil || !m.offers(a) {
 		return nil
 	}
-	d.phase, d.phaseAt, d.stopErr = phaseStopping, m.now, false
+	if a != actRemove {
+		d.armed = actNone
+	}
+	switch a {
+	case actStart:
+		m.fresh(phaseStarting)
+		return m.call(func() tea.Cmd { return bridge.StartContainer(m.docker, d.c.ID) })
+	case actStop:
+		d.phase, d.phaseAt, d.failMsg = phaseStopping, m.now, ""
+		return m.call(func() tea.Cmd { return bridge.StopContainer(m.docker, d.c.ID) })
+	case actRestart:
+		d.phase, d.phaseAt, d.failMsg = phaseRestarting, m.now, ""
+		return m.call(func() tea.Cmd { return bridge.RestartContainer(m.docker, d.c.ID) })
+	case actRemove:
+		if d.armed != actRemove {
+			if d.kind == imageDlg {
+				if users := m.imageUsers(d.img); len(users) > 0 {
+					d.blocker, d.failMsg = users[0].ID, "" // Docker would refuse: say why now
+					m.addLine(noteLine, users[0].Name+" uses this image. Remove that container first, then the image.")
+					return nil
+				}
+			}
+			d.armed = actRemove // ask for a second press
+			return nil
+		}
+		d.armed, d.phase, d.phaseAt, d.failMsg = actNone, phaseRemoving, m.now, ""
+		if d.kind == imageDlg {
+			return m.call(func() tea.Cmd { return bridge.RemoveImage(m.docker, d.img) })
+		}
+		return m.call(func() tea.Cmd { return bridge.RemoveContainer(m.docker, d.c.ID) })
+	case actUntag:
+		d.phase, d.phaseAt, d.failMsg = phaseRemoving, m.now, ""
+		tag := d.img.Tags[0]
+		return m.call(func() tea.Cmd { return bridge.RemoveImageTag(m.docker, d.img.ID, tag) })
+	case actGoTo:
+		id := d.blocker
+		m.closeDialog()
+		m.selectContainer(id)
+		return m.openDialog()
+	}
+	return nil
+}
+
+// call sends a bridge command, unless there is no Docker client (tests feed
+// the answers themselves).
+func (m *Model) call(cmd func() tea.Cmd) tea.Cmd {
+	m.busy(0.5)
 	if m.docker == nil {
 		return nil
 	}
-	return bridge.StopContainer(m.docker, d.c.ID)
+	return cmd()
 }
 
-// pressButton does what the action button says.
-func (m *Model) pressButton() tea.Cmd {
-	if m.dlg.canStop() {
-		return m.stopContainer()
+// failed records a refused action: the phase to go back to, the message
+// beside the buttons, and Docker's reason in the panel.
+func (m *Model) failed(p phase, msg string, err error) tea.Cmd {
+	d := m.dlg
+	d.phase, d.phaseAt, d.failMsg = p, m.now, msg
+	text := err.Error()
+	if d.kind == containerDlg {
+		text = strings.ReplaceAll(text, d.c.ID, shortID(d.c.ID))
+	} else {
+		text = strings.ReplaceAll(text, strings.TrimPrefix(d.img.ID, "sha256:"), d.img.ShortID)
 	}
-	return m.startContainer()
+	m.addLine(noteLine, text)
+	return tea.Batch(m.Load(), m.kick())
 }
 
-// dialogMsg handles the bridge messages that belong to the dialog.
+// done closes the dialog after a removal and leaves a note under the box.
+func (m *Model) done(note string) tea.Cmd {
+	m.closeDialog()
+	m.toast, m.toastAt = note, m.now
+	m.busy(toastFor + 0.1)
+	return tea.Batch(m.Load(), m.kick())
+}
+
+// dialogMsg handles the bridge messages that belong to the dialog. An
+// answer for a dialog that was closed (or reopened on something else) only
+// refreshes the list.
 func (m *Model) dialogMsg(msg tea.Msg) tea.Cmd {
 	d := m.dlg
+	mine := func(id string, p ...phase) bool {
+		if d == nil || (d.c.ID != id && d.img.ID != id) {
+			return false
+		}
+		for _, q := range p {
+			if d.phase == q {
+				return true
+			}
+		}
+		return false
+	}
 	switch msg := msg.(type) {
 	case bridge.StartedMsg:
-		if d == nil || d.c.ID != msg.ID || d.phase != phaseStarting {
-			return m.Load() // the dialog was closed meanwhile; the list still wants the news
+		if !mine(msg.ID, phaseStarting) {
+			return m.Load()
 		}
-		d.phaseAt = m.now
 		if msg.Err != nil {
-			d.phase = phaseFailed
-			m.addLine(noteLine, strings.ReplaceAll(msg.Err.Error(), d.c.ID, shortID(d.c.ID)))
-			return m.kick()
+			return m.failed(phaseFailed, "Docker didn't start it.", msg.Err)
 		}
-		d.phase = phaseRunning
+		d.phase, d.phaseAt = phaseRunning, m.now
 		d.c.State, d.c.Status = "running", "just started" // until the list refreshes
 		m.busy(flashDur)
 		return tea.Batch(m.openLogs(), m.Load(), m.kick())
 
 	case bridge.StoppedMsg:
-		if d == nil || d.c.ID != msg.ID || d.phase != phaseStopping {
+		if !mine(msg.ID, phaseStopping) {
 			return m.Load()
 		}
-		d.phaseAt = m.now
 		if msg.Err != nil {
-			d.phase, d.stopErr = phaseRunning, true
-			m.addLine(noteLine, strings.ReplaceAll(msg.Err.Error(), d.c.ID, shortID(d.c.ID)))
-			return m.kick()
+			return m.failed(phaseRunning, "Docker didn't stop it.", msg.Err)
 		}
-		d.phase = phaseReady
-		d.c.State, d.c.Status = "exited", "just stopped" // until the list refreshes
+		d.phase, d.phaseAt = phaseReady, m.now
+		d.c.State, d.c.Status = "exited", "just stopped"
 		m.busy(flashDur)
+		return tea.Batch(m.Load(), m.kick())
+
+	case bridge.RestartedMsg:
+		if !mine(msg.ID, phaseRestarting) {
+			return m.Load()
+		}
+		if msg.Err != nil {
+			return m.failed(phaseRunning, "Docker didn't restart it.", msg.Err)
+		}
+		m.fresh(phaseRunning) // the old stream ended with the stop; follow the new run
+		d.c.State, d.c.Status = "running", "just restarted"
+		m.busy(flashDur)
+		return tea.Batch(m.openLogs(), m.Load(), m.kick())
+
+	case bridge.ContainerRemovedMsg:
+		if !mine(msg.ID, phaseRemoving) {
+			return m.Load()
+		}
+		if msg.Err != nil {
+			return m.failed(phaseReady, "Docker didn't remove it.", msg.Err)
+		}
+		return m.done("removed " + d.c.Name)
+
+	case bridge.ImageRemovedMsg:
+		if !mine(msg.ID, phaseRemoving) {
+			return m.Load()
+		}
+		for _, t := range msg.Untagged {
+			m.addLine(infoLine, "untagged "+t)
+			for i, have := range d.img.Tags {
+				if have == t {
+					d.img.Tags = append(d.img.Tags[:i:i], d.img.Tags[i+1:]...)
+					break
+				}
+			}
+		}
+		switch {
+		case msg.Err != nil:
+			if id := m.userIn(msg.Err.Error()); id != "" {
+				d.blocker = id // a container uses it: GO TO takes you there
+				return m.failed(phaseReady, "", msg.Err)
+			}
+			return m.failed(phaseReady, "Docker didn't remove it.", msg.Err)
+		case msg.Deleted:
+			name := imageName(d.img)
+			if len(msg.Untagged) > 0 {
+				name = msg.Untagged[0]
+			}
+			return m.done("removed " + name)
+		}
+		d.phase, d.phaseAt = phaseReady, m.now
 		return tea.Batch(m.Load(), m.kick())
 
 	case bridge.LogsOpenedMsg:
@@ -267,8 +516,8 @@ func (m *Model) dialogMsg(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// addLine appends one line to the terminal. Scrolled back, the view stays
-// on the same lines instead of following.
+// addLine appends one line to the panel. Scrolled back, the view stays on
+// the same lines instead of following.
 func (m *Model) addLine(kind lineKind, text string) {
 	d := m.dlg
 	text = cleanLog(text)
@@ -283,22 +532,84 @@ func (m *Model) addLine(kind lineKind, text string) {
 	m.busy(lineIn + 0.05)
 }
 
-// dialogSynced updates the dialog's container from a fresh list. When its
-// output has ended and it is no longer up, the dialog offers to start it.
+// dialogSynced updates the dialog from a fresh list. When a container's
+// output has ended and it is no longer up, the dialog offers its actions
+// for a stopped container.
 func (m *Model) dialogSynced() {
 	d := m.dlg
 	if d == nil {
 		return
 	}
-	for _, c := range m.containers {
-		if c.ID == d.c.ID {
-			d.c = c
-			break
+	if d.kind == imageDlg {
+		for _, im := range m.images {
+			if im.ID == d.img.ID {
+				d.img = im
+				break
+			}
 		}
+		return
+	}
+	if c, ok := m.containerByID(d.c.ID); ok {
+		d.c = c
 	}
 	if d.phase == phaseRunning && d.ended && !isUp(d.c) {
 		d.phase, d.phaseAt = phaseReady, m.now
 	}
+}
+
+func (m *Model) containerByID(id string) (models.DockerModel, bool) {
+	if id == "" {
+		return models.DockerModel{}, false
+	}
+	for _, c := range m.containers {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return models.DockerModel{}, false
+}
+
+// imageUsers are the containers created from an image, by one of its tags
+// or by its ID.
+func (m *Model) imageUsers(im models.ImageModel) []models.DockerModel {
+	tags := map[string]bool{}
+	for _, t := range im.Tags {
+		tags[withTag(t)] = true
+	}
+	hex := strings.TrimPrefix(im.ID, "sha256:")
+	var out []models.DockerModel
+	for _, c := range m.containers {
+		ref := c.Image
+		byID := ref == im.ID || (len(ref) >= 12 && strings.HasPrefix(hex, strings.TrimPrefix(ref, "sha256:")))
+		if tags[withTag(ref)] || byID {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// withTag adds the ":latest" Docker assumes when a reference names no tag.
+func withTag(ref string) string {
+	if strings.LastIndex(ref, ":") <= strings.LastIndex(ref, "/") {
+		return ref + ":latest"
+	}
+	return ref
+}
+
+// usesImage finds the container in Docker's "container 3f57d9401f8d is
+// using its referenced image" refusal.
+var usesImage = regexp.MustCompile(`container ([0-9a-f]{12,64})`)
+
+// userIn returns the ID of a known container named in a Docker error, or "".
+func (m *Model) userIn(errText string) string {
+	for _, sm := range usesImage.FindAllStringSubmatch(errText, -1) {
+		for _, c := range m.containers {
+			if strings.HasPrefix(c.ID, sm[1]) {
+				return c.ID
+			}
+		}
+	}
+	return ""
 }
 
 func (m *Model) dialogKey(k tea.KeyMsg) tea.Cmd {
@@ -306,11 +617,23 @@ func (m *Model) dialogKey(k tea.KeyMsg) tea.Cmd {
 	w := m.dialogLayout()
 	switch {
 	case key.Matches(k, ks.Close):
-		m.closeDialog()
+		if d.armed != actNone {
+			d.armed = actNone // esc takes back a remove first
+		} else {
+			m.closeDialog()
+		}
 	case key.Matches(k, ks.Start):
-		return tea.Batch(m.startContainer(), m.kick())
+		return tea.Batch(m.do(actStart), m.kick())
 	case key.Matches(k, ks.Stop):
-		return tea.Batch(m.stopContainer(), m.kick())
+		return tea.Batch(m.do(actStop), m.kick())
+	case key.Matches(k, ks.Restart):
+		return tea.Batch(m.do(actRestart), m.kick())
+	case key.Matches(k, ks.Remove):
+		return tea.Batch(m.do(actRemove), m.kick())
+	case key.Matches(k, ks.Untag):
+		return tea.Batch(m.do(actUntag), m.kick())
+	case key.Matches(k, ks.GoTo):
+		return tea.Batch(m.do(actGoTo), m.kick())
 	case key.Matches(k, ks.Up):
 		m.scrollLogs(1)
 	case key.Matches(k, ks.Down):
@@ -330,13 +653,14 @@ func (m *Model) dialogKey(k tea.KeyMsg) tea.Cmd {
 func (m *Model) dialogMouse(e tea.MouseMsg) tea.Cmd {
 	d := m.dlg
 	w := m.dialogLayout()
-	on := func(b [3]int) bool { return b[1] > 0 && e.Y == b[2] && e.X >= b[0] && e.X < b[1] }
-	d.hover = 0
-	switch {
-	case on(w.act) && !d.busyPhase():
-		d.hover = 1
-	case on(w.close):
-		d.hover = 2
+	d.hover, d.onClose = actNone, false
+	for _, b := range w.btns {
+		if e.Y == w.actRow && e.X >= b.x0 && e.X < b.x1 {
+			d.hover = b.act
+		}
+	}
+	if e.Y == w.close[2] && e.X >= w.close[0] && e.X < w.close[1] {
+		d.onClose = true
 	}
 	switch {
 	case e.Button == tea.MouseButtonWheelUp:
@@ -344,389 +668,20 @@ func (m *Model) dialogMouse(e tea.MouseMsg) tea.Cmd {
 	case e.Button == tea.MouseButtonWheelDown:
 		m.scrollLogs(-3)
 	case e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft:
-		switch d.hover {
-		case 1:
-			return tea.Batch(m.pressButton(), m.kick())
-		case 2:
+		switch {
+		case d.hover != actNone:
+			return tea.Batch(m.do(d.hover), m.kick())
+		case d.onClose:
 			m.closeDialog()
 		}
 	}
 	return m.kick()
 }
 
-// scrollLogs moves the terminal n rows back in time (negative: forward).
+// scrollLogs moves the panel n rows back in time (negative: forward).
 func (m *Model) scrollLogs(n int) {
 	d := m.dlg
 	w := m.dialogLayout()
 	d.back = max(0, d.back+n)
 	_, d.back = d.tail(w.termR-w.termL, w.termRows)
-}
-
-// vrow is one terminal row: a log line, or a piece of a wrapped one.
-type vrow struct {
-	text string
-	kind lineKind
-	at   float64
-	cont bool // continues the line above
-}
-
-// tail is the n rows on screen, oldest first, w cells wide, and the scroll
-// position clamped to what there is.
-func (d *dialog) tail(w, n int) ([]vrow, int) {
-	need := d.back + n
-	var rev []vrow
-	for i := len(d.logs) - 1; i >= 0 && len(rev) < need; i-- {
-		l := d.logs[i]
-		parts := wrap(l.text, w)
-		for j := len(parts) - 1; j >= 0; j-- {
-			rev = append(rev, vrow{parts[j], l.kind, l.at, j > 0})
-		}
-	}
-	back := min(d.back, max(0, len(rev)-n))
-	vis := rev[back:min(len(rev), back+n)]
-	out := make([]vrow, len(vis))
-	for i, r := range vis {
-		out[len(vis)-1-i] = r
-	}
-	return out, back
-}
-
-// wrap cuts s into pieces of at most w cells, at a space when there is one
-// in the second half of the piece.
-func wrap(s string, w int) []string {
-	r := []rune(s)
-	if w <= 0 || len(r) <= w {
-		return []string{s}
-	}
-	var out []string
-	for len(r) > w {
-		cut := w
-		for i := w; i > w/2; i-- {
-			if r[i] == ' ' {
-				cut = i
-				break
-			}
-		}
-		out = append(out, string(r[:cut]))
-		r = r[cut:]
-		if r[0] == ' ' {
-			r = r[1:]
-		}
-	}
-	return append(out, string(r))
-}
-
-var escapes = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
-
-// cleanLog makes a log line safe to draw one rune per cell: no colour codes
-// or other escapes, tabs expanded, control and zero-width runes dropped, and
-// double-width runes (CJK, emoji) replaced so the row keeps its width.
-func cleanLog(s string) string {
-	s = escapes.ReplaceAllString(s, "")
-	if i := strings.LastIndexByte(s, '\r'); i >= 0 && i < len(s)-1 {
-		s = s[i+1:] // a progress bar redraws itself with \r: keep what it shows last
-	}
-	var b strings.Builder
-	n := 0
-	for _, r := range s {
-		if n >= maxLogRunes {
-			break
-		}
-		switch {
-		case r == '\t':
-			for k := 4 - n%4; k > 0; k-- {
-				b.WriteByte(' ')
-				n++
-			}
-			continue
-		case r < 0x20 || (r >= 0x7f && r < 0xa0):
-			continue
-		case unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf):
-			continue
-		case wide(r):
-			r = '□'
-		}
-		b.WriteRune(r)
-		n++
-	}
-	return b.String()
-}
-
-// wide reports runes that take two terminal cells.
-func wide(r rune) bool {
-	switch {
-	case r < 0x1100:
-		return false
-	case r <= 0x115f, r >= 0x2e80 && r <= 0xa4cf, r >= 0xac00 && r <= 0xd7a3,
-		r >= 0xf900 && r <= 0xfaff, r >= 0xfe30 && r <= 0xfe4f, r >= 0xff00 && r <= 0xff60,
-		r >= 0xffe0 && r <= 0xffe6, r >= 0x1f300 && r <= 0x1faff, r >= 0x20000 && r <= 0x3fffd:
-		return true
-	}
-	return false
-}
-
-// drawDialog dims the screen behind it (all but the key hints) and draws
-// the dialog on top.
-func (m *Model) drawDialog(hints [2]int) {
-	cv, d := m.cv, m.dlg
-	w := m.dialogLayout()
-	open := 1.0
-	if !m.reduce {
-		open = smooth(0, dialogOpen, m.now-d.born)
-	}
-
-	dim := float32(0.62 * open)
-	for row := 0; row < cv.Rows; row++ {
-		for col := 0; col < cv.Cols; col++ {
-			if row == m.lay.helpRow && col >= hints[0] && col < hints[1] {
-				continue // the dialog's key hints
-			}
-			cv.Fade(col, row, cNight, dim)
-		}
-	}
-
-	// Unfold from the middle, like the logbook.
-	h := w.y1 - w.y0 + 1
-	rows := max(2, int(math.Round(float64(h)*open)))
-	top := w.y0 + (h-rows)/2
-	bot := top + rows - 1
-	shadow := dots.Lerp(cNight, dots.RGB{}, 0.6)
-	for row := top; row <= bot+1; row++ {
-		for col := w.x0; col <= w.x1+1; col++ {
-			cv.ClearCell(col, row)
-			switch {
-			case row <= bot && col <= w.x1:
-				cv.Back(col, row, cPanel)
-			case row > top && col > w.x0:
-				cv.Back(col, row, shadow)
-			}
-		}
-	}
-	edge := dots.Lerp(cFrame, cMist, 0.35)
-	for col := w.x0 + 1; col < w.x1; col++ {
-		cv.Glyph(col, top, '─', edge)
-		cv.Glyph(col, bot, '─', edge)
-	}
-	for row := top + 1; row < bot; row++ {
-		cv.Glyph(w.x0, row, '│', edge)
-		cv.Glyph(w.x1, row, '│', edge)
-	}
-	cv.Glyph(w.x0, top, '╭', edge)
-	cv.Glyph(w.x1, top, '╮', edge)
-	cv.Glyph(w.x0, bot, '╰', edge)
-	cv.Glyph(w.x1, bot, '╯', edge)
-	if open < 1 {
-		return
-	}
-
-	p := 1.0
-	if !m.reduce {
-		p = (m.now - d.born - dialogOpen) / 0.18
-	}
-	m.write(w.x0+2, w.y0, w.close[0]-1, 1, span{" C O N T A I N E R ", cPaper})
-	cc := cMist
-	if d.hover == 2 {
-		cc = cPaper
-		for col := w.close[0]; col < w.close[1]; col++ {
-			cv.Back(col, w.y0, cLift)
-		}
-	}
-	m.write(w.close[0], w.y0, w.close[1], 1, span{closeLabel, cc})
-
-	m.drawDialogHead(w, p)
-	m.drawDialogAction(w, p)
-
-	m.write(w.inL, w.ruleRow, w.inR, p, span{"OUTPUT", cMist})
-	for col := w.inL + 8; col < w.inR; col += 2 {
-		cv.Glyph(col, w.ruleRow, '·', cFrame)
-	}
-	m.drawTerminal(w)
-}
-
-// drawDialogHead is the container's name, image and state.
-func (m *Model) drawDialogHead(w dlgLayout, p float64) {
-	d := m.dlg
-	c := d.c
-	look := theme.ContainerLook(c.State, c.Health)
-	g, gc := look.Glyph, dots.Hex(look.Color)
-	if look.Word == "running" {
-		amb := m.ambient()
-		gc = dots.Lerp(cMist, cPaper, float32(1-amb*(0.5-0.5*math.Cos(m.now*2.4))*0.45))
-	}
-	switch {
-	case d.busyPhase():
-		g, gc = '◌', dots.Lerp(cMist, cSignal, float32(0.5+0.5*math.Sin(m.now*7)))
-	case (d.phase == phaseRunning || d.phase == phaseReady) && !d.stopErr && m.now-d.phaseAt < flashDur && d.phaseAt > d.born:
-		k := 1 - (m.now-d.phaseAt)/flashDur
-		gc = dots.Lerp(gc, cSignal, float32(k))
-		if k > 0.5 {
-			g = '◉'
-		}
-	}
-	m.print(w.inL, w.headRow, string(g), gc, p)
-	m.write(w.inL+2, w.headRow, w.inR, p,
-		span{c.Name, cPaper}, span{"  " + shortID(c.ID), cMist}, span{"  " + c.Image, dots.Lerp(cMist, cPaper, 0.55)})
-
-	label := func(s string) span { return span{s + "  ", cMist} }
-	gap := span{"     ", cMist}
-	parts := []span{label("STATE"), {look.Word, dots.Hex(look.Color)}, gap, label("STATUS"), {c.Status, cPaper}}
-	if c.Ports != "" {
-		parts = append(parts, gap, label("PORTS"), span{c.Ports, cPaper})
-	}
-	m.write(w.inL+2, w.stateRow, w.inR, p, parts...)
-}
-
-// drawDialogAction is the action button (start, stop, retry, or its
-// progress while Docker works) and what is happening, beside it.
-func (m *Model) drawDialogAction(w dlgLayout, p float64) {
-	cv, d := m.cv, m.dlg
-	name := d.c.Name
-	b := w.act
-	say := func(parts ...span) { m.write(b[1]+3, b[2], w.inR, p, parts...) }
-
-	if d.busyPhase() {
-		// The button turns into a run of halftone dots while Docker works.
-		for col := b[0]; col < b[1]; col++ {
-			cv.Back(col, b[2], cLift)
-			v := 0.5
-			if !m.reduce {
-				v = 0.5 + 0.5*math.Sin(float64(col-b[0])*0.9-m.now*10)
-			}
-			cv.Glyph(col, b[2], ramp[min(2, int(v*3))], dots.Lerp(cAsh, cSignal, float32(v)))
-		}
-		if d.phase == phaseStarting {
-			say(span{"starting " + name + "…", cPaper})
-		} else {
-			say(span{"stopping " + name + "…", cPaper}, span{"  waiting for it to exit", cMist})
-		}
-		return
-	}
-
-	// Start is the loud button; stop is quieter, it ends something that works.
-	label, bg, fg := startLabel, cSignal, cNight
-	hot := dots.Lerp(cSignal, cPaper, 0.3)
-	switch d.phase {
-	case phaseFailed:
-		label = retryLabel
-	case phaseRunning:
-		label, bg, fg, hot = stopLabel, cRaise, cPaper, cLift
-	}
-	if d.hover == 1 {
-		bg = hot
-	}
-	for col := b[0]; col < b[1]; col++ {
-		cv.Back(col, b[2], bg)
-	}
-	m.write(b[0], b[2], b[1], p, span{label, fg})
-	if d.phase == phaseRunning {
-		cv.Glyph(b[0]+1, b[2], '■', cSignal)
-	}
-
-	switch {
-	case d.phase == phaseFailed:
-		say(span{"Docker didn't start it.", cSignal}, span{"  The reason is below.", cMist})
-	case d.stopErr:
-		say(span{"Docker didn't stop it.", cSignal}, span{"  The reason is below.", cMist})
-	case d.phase == phaseRunning && d.opening:
-		say(span{"opening its output…", cMist})
-	case d.phase == phaseRunning && d.ended:
-		say(span{"its output ended", cMist})
-	case d.phase == phaseRunning:
-		say(span{"following its output", cMist})
-	default:
-		say(span{name + " is stopped.", cPaper}, span{"  Its output shows below.", cMist})
-	}
-}
-
-// drawTerminal is the inset where the output scrolls.
-func (m *Model) drawTerminal(w dlgLayout) {
-	cv, d := m.cv, m.dlg
-	for row := w.termTop; row < w.termTop+w.termRows; row++ {
-		for col := w.x0 + 2; col <= w.x1-2; col++ {
-			cv.Back(col, row, cNight)
-		}
-	}
-	tw := w.termR - w.termL
-	vis, back := d.tail(tw, w.termRows)
-	d.back = back
-
-	if len(vis) == 0 {
-		msg := "nothing yet. What it prints shows up here."
-		switch {
-		case d.phase == phaseStarting:
-			msg = "waiting for Docker…"
-		case d.opening:
-			msg = "waiting for output…"
-		case d.ended:
-			msg = "it printed nothing."
-		}
-		m.write(w.termL, w.termTop, w.termR, 1, span{msg, cAsh})
-	}
-
-	out := dots.Lerp(cMist, cPaper, 0.8)
-	for i, r := range vis {
-		y := w.termTop + i
-		fg := out
-		switch r.kind {
-		case stderrLine:
-			if !r.cont {
-				cv.Glyph(w.termL-2, y, '▎', dots.Lerp(cAsh, cSignal, 0.55))
-			}
-			fg = dots.Lerp(cMist, cPaper, 0.6)
-		case noteLine:
-			if !r.cont {
-				cv.Glyph(w.termL-2, y, '!', cSignal)
-			}
-			fg = cSignal
-		case infoLine:
-			fg = cMist
-		}
-		pr := 1.0
-		if !m.reduce {
-			pr = (m.now - r.at) / lineIn
-		}
-		m.print(w.termL, y, r.text, fg, pr)
-	}
-
-	// The bottom edge says where you are in the output.
-	var st []span
-	n := len(d.logs)
-	switch {
-	case back > 0:
-		st = []span{{" ↑ ", cSignal}, {strconv.Itoa(back) + " rows back   ", cPaper}, {"G", cSignal}, {" follow ", cMist}}
-	case n > 0 && d.stream != nil:
-		st = []span{{" " + plural(n, "line") + " · following ", cMist}}
-	case n > 0:
-		st = []span{{" " + plural(n, "line") + " ", cMist}}
-	}
-	m.write(w.x0+2, w.y1, w.x1-2, 1, st...)
-
-	// A scrollbar when there is more than fits.
-	if total := d.rowCount(tw); total > w.termRows {
-		thumb := max(1, w.termRows*w.termRows/total)
-		at := (total - w.termRows - back) * (w.termRows - thumb) / (total - w.termRows)
-		for i := 0; i < w.termRows; i++ {
-			g, c := '│', cAsh
-			if i >= at && i < at+thumb {
-				g, c = '┃', cMist
-			}
-			cv.Glyph(w.x1-2, w.termTop+i, g, c)
-		}
-	}
-}
-
-// rowCount is how many terminal rows all the lines take at width w.
-func (d *dialog) rowCount(w int) int {
-	n := 0
-	for _, l := range d.logs {
-		n += len(wrap(l.text, w))
-	}
-	return n
-}
-
-func plural(n int, word string) string {
-	if n == 1 {
-		return "1 " + word
-	}
-	return strconv.Itoa(n) + " " + word + "s"
 }

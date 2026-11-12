@@ -122,7 +122,9 @@ type Model struct {
 	filtering bool
 	showKeys  bool
 	hover     int     // list row under the mouse, -1 for none
-	dlg       *dialog // the container dialog, nil when closed
+	dlg       *dialog // the open dialog, nil when closed
+	toast     string  // "removed web", under the box for a moment
+	toastAt   float64
 
 	// Animation, in seconds since the first frame.
 	start, now, last float64
@@ -243,7 +245,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.kick()
 
-	case bridge.StartedMsg, bridge.StoppedMsg, bridge.LogsOpenedMsg, bridge.LogsMsg:
+	case bridge.StartedMsg, bridge.StoppedMsg, bridge.RestartedMsg, bridge.ContainerRemovedMsg,
+		bridge.ImageRemovedMsg, bridge.LogsOpenedMsg, bridge.LogsMsg:
 		return m, m.dialogMsg(msg)
 
 	case tea.KeyMsg:
@@ -258,10 +261,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // syncKeys turns on the bindings that do something right now. key.Matches
 // ignores disabled bindings and the footer hides them.
 func (m *Model) syncKeys() {
-	m.keys.Open.SetEnabled(m.sec == containersTab && len(m.containers) > 0)
-	if m.dlg != nil {
-		m.dkeys.Start.SetEnabled(m.dlg.canStart())
-		m.dkeys.Stop.SetEnabled(m.dlg.canStop())
+	m.keys.Open.SetEnabled(m.sec != podsTab && len(m.rows(m.sec)) > 0)
+	ks := &m.dkeys
+	for b, a := range map[*key.Binding]action{&ks.Start: actStart, &ks.Stop: actStop, &ks.Restart: actRestart,
+		&ks.Remove: actRemove, &ks.Untag: actUntag, &ks.GoTo: actGoTo} {
+		b.SetEnabled(m.offers(a))
 	}
 }
 
@@ -303,9 +307,7 @@ func (m *Model) key(k tea.KeyMsg) tea.Cmd {
 	case key.Matches(k, ks.Down):
 		m.move(1)
 	case key.Matches(k, ks.Open):
-		if m.sec == containersTab {
-			return tea.Batch(m.openDialog(), m.kick())
-		}
+		return tea.Batch(m.openDialog(), m.kick())
 	case key.Matches(k, ks.PageUp):
 		m.move(-max(1, m.lay.listRows-1))
 	case key.Matches(k, ks.PageDown):
@@ -390,9 +392,7 @@ func (m *Model) mouseEvent(e tea.MouseMsg) tea.Cmd {
 			}
 		case m.hover >= 0:
 			m.move(m.off[m.sec] + m.hover - m.sel[m.sec])
-			if m.sec == containersTab {
-				return tea.Batch(m.openDialog(), m.kick())
-			}
+			return tea.Batch(m.openDialog(), m.kick())
 		case in && !m.reduce:
 			m.ripples = append(m.ripples, ripple{at: p})
 		}
@@ -540,6 +540,7 @@ func (m *Model) setImages(is []models.ImageModel) {
 		m.busy(1)
 	}
 	m.reanchor(imagesTab)
+	m.dialogSynced()
 }
 
 // resize lays the screen out for a new terminal size.
@@ -718,7 +719,7 @@ func (m *Model) animating() bool {
 		m.heatMax > 0.02 || len(m.ripples) > 0 ||
 		(m.lensOn > 0 && m.lensOn < 1) ||
 		(m.lensOn > 0 && math.Hypot(m.mouse.X-m.lens.X, m.mouse.Y-m.lens.Y) > 0.05) ||
-		(m.dlg != nil && (m.now-m.dlg.born < dialogOpen+0.3 || m.dlg.busyPhase()))
+		(m.dlg != nil && (m.now-m.dlg.born < dialogOpen+0.3 || m.dlg.busy()))
 }
 
 func smooth(e0, e1, x float64) float64 {

@@ -344,7 +344,7 @@ func TestDialog(t *testing.T) {
 		// A stop that fails leaves it running and says why.
 		key(runes("x"))
 		m.Update(bridge.StoppedMsg{ID: m.dlg.c.ID, Err: errors.New("stop container " + m.dlg.c.ID + ": context deadline exceeded")})
-		if m.dlg.phase != phaseRunning || !m.dlg.stopErr {
+		if m.dlg.phase != phaseRunning || m.dlg.failMsg == "" {
 			t.Fatalf("%dx%d: a failed stop should leave it running and say so", cols, rows)
 		}
 		run(0.6)
@@ -372,5 +372,180 @@ func TestCleanLog(t *testing.T) {
 		if got := cleanLog(in); got != want {
 			t.Errorf("cleanLog(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestDialogActions plays restart, remove (with its second press) and the
+// image dialog: untag, a removal a container blocks, going to that
+// container, and removing an image nobody uses.
+func TestDialogActions(t *testing.T) {
+	dir := os.Getenv("ANCHORS_SNAPSHOT_DIR")
+	for _, sz := range [][2]int{{80, 24}, {120, 36}} {
+		cols, rows := sz[0], sz[1]
+		m := New(nil)
+		m.Update(tea.WindowSizeMsg{Width: cols, Height: rows})
+		m.Init()
+		run := func(d float64) {
+			for f, end := m.now, m.now+d; f < end; f += 1.0 / fps {
+				m.Update(frameMsg(base.Add(time.Duration(f * float64(time.Second)))))
+			}
+		}
+		snap := func(name string) {
+			view := m.View()
+			for i, l := range strings.Split(view, "\n") {
+				if w := len([]rune(sgr.ReplaceAllString(l, ""))); w != cols {
+					t.Fatalf("%dx%d %s line %d: width %d, want %d", cols, rows, name, i, w, cols)
+				}
+			}
+			if dir != "" {
+				os.WriteFile(filepath.Join(dir, fmt.Sprintf("%dx%d-a%s.ans", cols, rows, name)), []byte(view), 0o644)
+			}
+		}
+		press := func(s string) {
+			k := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+			switch s {
+			case "enter":
+				k = tea.KeyMsg{Type: tea.KeyEnter}
+			case "esc":
+				k = tea.KeyMsg{Type: tea.KeyEsc}
+			}
+			m.Update(k)
+		}
+		fail := func(format string, a ...any) {
+			t.Helper()
+			t.Fatalf("%dx%d: "+format, append([]any{cols, rows}, a...)...)
+		}
+
+		cs := sampleContainers()
+		cs[2].Image = "docker.io/library/postgres:16" // a reference anchors can't match to the image: only Docker's refusal tells
+		m.Update(frameMsg(base))
+		m.Update(bridge.ContainersMsg{Containers: append([]models.DockerModel(nil), cs...)}) // the dashboard sorts what it gets
+		m.Update(bridge.ImagesMsg{Images: sampleImages()})
+		run(1.5)
+
+		// Restart a running container: the output starts over.
+		web := cs[0]
+		m.selectContainer(web.ID)
+		press("enter")
+		m.Update(bridge.LogsOpenedMsg{ID: web.ID, Stream: &bridge.LogStream{ID: web.ID}})
+		press("r")
+		if m.dlg.phase != phaseRestarting {
+			fail("r should restart a running container")
+		}
+		run(0.3)
+		snap("0-restarting")
+		m.Update(bridge.RestartedMsg{ID: web.ID})
+		if m.dlg.phase != phaseRunning || !m.dlg.opening || m.dlg.c.Status != "just restarted" {
+			fail("after a restart the dialog should follow the new run, got %+v", m.dlg)
+		}
+		if press("d"); m.dlg.armed != actNone {
+			fail("a running container can't be removed")
+		}
+		press("esc")
+
+		// Remove a stopped one: the first press asks, esc takes it back, the second removes.
+		worker := cs[4]
+		m.selectContainer(worker.ID)
+		press("enter")
+		press("d")
+		if m.dlg.armed != actRemove || m.dlg.phase != phaseReady {
+			fail("the first d should ask, not remove")
+		}
+		run(0.5)
+		snap("1-confirm-remove")
+		press("esc")
+		if m.dlg == nil || m.dlg.armed != actNone {
+			fail("esc should take back the remove and keep the dialog")
+		}
+		press("d")
+		press("d")
+		if m.dlg.phase != phaseRemoving {
+			fail("the second d should remove")
+		}
+		m.Update(bridge.ContainerRemovedMsg{ID: worker.ID})
+		if m.dlg != nil || m.toast != "removed worker" {
+			fail("a removed container closes the dialog and says so, got toast %q", m.toast)
+		}
+		run(0.3)
+		snap("2-removed")
+
+		// Images: nginx has two tags and web uses it.
+		press("2")
+		run(1)
+		imgs := sampleImages()
+		find := func(tag string) models.ImageModel {
+			for _, im := range imgs {
+				if len(im.Tags) > 0 && im.Tags[0] == tag || len(im.Tags) == 0 && tag == "" {
+					return im
+				}
+			}
+			t.Fatalf("no image %q", tag)
+			return models.ImageModel{}
+		}
+		selectImage := func(id string) {
+			for i, r := range m.rows(imagesTab) {
+				if r.id == id {
+					m.move(i - m.sel[imagesTab])
+				}
+			}
+		}
+		nginx := find("nginx:1.27")
+		selectImage(nginx.ID)
+		press("enter")
+		if m.dlg == nil || m.dlg.kind != imageDlg {
+			fail("enter on an image should open its dialog")
+		}
+		run(0.6)
+		snap("3-image")
+
+		press("u")
+		m.Update(bridge.ImageRemovedMsg{ID: nginx.ID, Untagged: []string{"nginx:1.27"}})
+		if len(m.dlg.img.Tags) != 1 || m.dlg.img.Tags[0] != "nginx:latest" || m.dlg.phase != phaseReady {
+			fail("untag should drop only the first tag, got %v", m.dlg.img.Tags)
+		}
+		m.dlg.img.Tags = nginx.Tags // as if the list still had both (the test has no Docker to refresh from)
+		press("d")
+		if m.dlg.blocker != web.ID || m.dlg.armed != actNone {
+			fail("web uses nginx: removing it should point at web instead of asking")
+		}
+		run(0.5)
+		snap("4-blocked")
+		press("c")
+		if m.dlg == nil || m.dlg.kind != containerDlg || m.dlg.c.ID != web.ID || m.sec != containersTab {
+			fail("c should take you to web's dialog")
+		}
+		press("esc")
+
+		// postgres: anchors can't tell db uses it, Docker can.
+		press("2")
+		pg := find("postgres:16")
+		selectImage(pg.ID)
+		press("enter")
+		press("d")
+		press("d")
+		if m.dlg.phase != phaseRemoving {
+			fail("an image no container seems to use should be removed after two presses")
+		}
+		m.Update(bridge.ImageRemovedMsg{ID: pg.ID, Err: errors.New("remove image postgres:16: Error response from daemon: conflict: unable to remove repository reference \"postgres:16\" (must force) - container " + cs[2].ID[:12] + " is using its referenced image " + pg.ShortID)})
+		if m.dlg.blocker != cs[2].ID || m.dlg.phase != phaseReady {
+			fail("Docker's refusal names db: the dialog should point at it, got blocker %q", m.dlg.blocker)
+		}
+		run(0.6)
+		snap("5-docker-refused")
+		press("esc")
+
+		// The dangling image: nobody uses it, it goes by its ID.
+		dangling := find("")
+		selectImage(dangling.ID)
+		press("enter")
+		press("d")
+		run(0.5)
+		snap("6-confirm-image")
+		press("d")
+		m.Update(bridge.ImageRemovedMsg{ID: dangling.ID, Deleted: true})
+		if m.dlg != nil || m.toast != "removed <none>" {
+			fail("a removed image closes the dialog, got toast %q", m.toast)
+		}
+		run(5)
 	}
 }

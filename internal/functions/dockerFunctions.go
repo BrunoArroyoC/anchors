@@ -46,6 +46,24 @@ func StopContainer(ctx context.Context, cli *client.Client, id string) error {
 	return nil
 }
 
+// function: restart
+func RestartContainer(ctx context.Context, cli *client.Client, id string) error {
+	_, err := cli.ContainerRestart(ctx, id, client.ContainerRestartOptions{})
+	if err != nil {
+		return fmt.Errorf("restart container %s: %w", id, err)
+	}
+	return nil
+}
+
+// container remove
+func RemoveContainer(ctx context.Context, cli *client.Client, id string) error {
+	_, err := cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{})
+	if err != nil {
+		return fmt.Errorf("remove container %s: %w", id, err)
+	}
+	return nil
+}
+
 // functions: open the log stream. The caller reads it and closes it.
 func ContainerLogs(ctx context.Context, cli *client.Client, id string) (io.ReadCloser, error) {
 	out, err := cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{

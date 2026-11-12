@@ -532,7 +532,9 @@ func (m *Model) drawFooter() [2]int {
 		return [2]int{}
 	}
 	var parts []span
-	if m.filtering {
+	if m.toast != "" && m.now-m.toastAt < toastFor {
+		parts = []span{{"✕ ", cSignal}, {m.toast, cPaper}}
+	} else if m.filtering {
 		parts = []span{{"/ ", cSignal}, {m.filter, cPaper}, {"▏", cSignal}, {"    ", cMist},
 			{"enter", cSignal}, {" keep   ", cMist}, {"esc", cSignal}, {" clear", cMist}}
 		if int(m.now*2)%2 == 1 && !m.reduce {

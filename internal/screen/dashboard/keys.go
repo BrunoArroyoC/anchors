@@ -52,8 +52,10 @@ func (k keyMap) FullHelp() [][]key.Binding {
 
 // dialogKeys are the bindings while a container's dialog is open.
 type dialogKeys struct {
-	Start, Stop, Up, Down, PageUp, PageDown, Top, Follow, Close key.Binding
-	scroll                                                      key.Binding // footer label for Up+Down
+	Start, Stop, Restart, Remove, Untag, GoTo key.Binding
+	Up, Down, PageUp, PageDown, Top, Follow   key.Binding
+	Close                                     key.Binding
+	scroll                                    key.Binding // footer label for Up+Down
 }
 
 func newDialogKeys() dialogKeys {
@@ -63,6 +65,10 @@ func newDialogKeys() dialogKeys {
 	return dialogKeys{
 		Start:    b([]string{"enter", "s"}, "enter", "start"),
 		Stop:     b([]string{"x"}, "x", "stop"), // not enter: one enter too many shouldn't stop a container
+		Restart:  b([]string{"r"}, "r", "restart"),
+		Remove:   b([]string{"d", "delete"}, "d", "remove"),
+		Untag:    b([]string{"u"}, "u", "untag"),
+		GoTo:     b([]string{"c"}, "c", "go to container"),
 		Up:       b([]string{"up", "k"}, "↑ k", "scroll up"),
 		Down:     b([]string{"down", "j"}, "↓ j", "scroll down"),
 		PageUp:   b([]string{"pgup", "ctrl+u"}, "pgup", "page up"),
@@ -75,12 +81,12 @@ func newDialogKeys() dialogKeys {
 }
 
 func (k dialogKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.Start, k.Stop, k.scroll, k.Follow, k.Close}
+	return []key.Binding{k.GoTo, k.Start, k.Stop, k.Restart, k.Remove, k.Untag, k.scroll, k.Follow, k.Close}
 }
 
 func (k dialogKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Start, k.Stop, k.Close},
+		{k.Start, k.Stop, k.Restart, k.Remove, k.Untag, k.GoTo, k.Close},
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Top, k.Follow},
 	}
 }

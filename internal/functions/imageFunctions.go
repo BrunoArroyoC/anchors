@@ -26,6 +26,25 @@ func ListImages(ctx context.Context, cli *client.Client) ([]models.ImageModel, e
 	return imagesList, nil
 }
 
+// function: remove image and all the tags (UI has to confirm if the user want to delete all the
+// tags )
+func RemoveImage(ctx context.Context, cli *client.Client, id string) error {
+	_, err := cli.ImageRemove(ctx, id, client.ImageRemoveOptions{PruneChildren: true})
+	if err != nil {
+		return fmt.Errorf("remove images: %s, %w", id, err)
+	}
+	return nil
+}
+
+// functions: remove a image tag only.
+func RemoveImageTag(ctx context.Context, cli *client.Client, tag string) error {
+	_, err := cli.ImageRemove(ctx, tag, client.ImageRemoveOptions{PruneChildren: true})
+	if err != nil {
+		return fmt.Errorf("remove images: %s, %w", tag, err)
+	}
+	return nil
+}
+
 func toImage(s image.Summary) models.ImageModel {
 	return models.ImageModel{
 		ID:            s.ID,
