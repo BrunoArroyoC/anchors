@@ -11,6 +11,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// ListContainers returns every container, running or not.
 func ListContainers(ctx context.Context, cli *client.Client) ([]models.DockerModel, error) {
 	result, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
@@ -24,9 +25,11 @@ func ListContainers(ctx context.Context, cli *client.Client) ([]models.DockerMod
 	return containers, nil
 }
 
-//Actions for one container
+// Actions on one container.
 
-// functions: start and return. No waiting, no printing.
+// StartContainer starts a stopped container and returns once Docker has
+// started it; it doesn't wait for the container to finish. Starting a
+// container that is already running is not an error.
 func StartContainer(ctx context.Context, cli *client.Client, id string) error {
 	if _, err := cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("start container %s: %w", id, err)
@@ -34,7 +37,6 @@ func StartContainer(ctx context.Context, cli *client.Client, id string) error {
 	return nil
 }
 
-// functions: stop and return No waiting, no priting
 // StopContainer stops a running container: SIGTERM, then SIGKILL once its
 // stop timeout runs out. It returns when the container is down. Stopping a
 // container that is already stopped is not an error.
@@ -46,7 +48,8 @@ func StopContainer(ctx context.Context, cli *client.Client, id string) error {
 	return nil
 }
 
-// function: restart
+// RestartContainer stops a container (like StopContainer, so it can take as
+// long as the container's stop timeout) and starts it again.
 func RestartContainer(ctx context.Context, cli *client.Client, id string) error {
 	_, err := cli.ContainerRestart(ctx, id, client.ContainerRestartOptions{})
 	if err != nil {
@@ -55,7 +58,8 @@ func RestartContainer(ctx context.Context, cli *client.Client, id string) error 
 	return nil
 }
 
-// container remove
+// RemoveContainer removes a stopped container. Docker refuses to remove a
+// running one. Its volumes are kept.
 func RemoveContainer(ctx context.Context, cli *client.Client, id string) error {
 	_, err := cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{})
 	if err != nil {
@@ -64,7 +68,11 @@ func RemoveContainer(ctx context.Context, cli *client.Client, id string) error {
 	return nil
 }
 
-// functions: open the log stream. The caller reads it and closes it.
+// ContainerLogs opens a container's log stream: its last 200 lines, then
+// everything it prints until ctx is cancelled, so don't pass a short timeout.
+// stdout and stderr come mixed into one stream (split them with
+// stdcopy.StdCopy), except for a container started with a TTY, whose stream
+// is plain text. The caller must close it.
 func ContainerLogs(ctx context.Context, cli *client.Client, id string) (io.ReadCloser, error) {
 	out, err := cli.ContainerLogs(ctx, id, client.ContainerLogsOptions{
 		ShowStdout: true, ShowStderr: true, Follow: true, Tail: "200",
@@ -73,6 +81,19 @@ func ContainerLogs(ctx context.Context, cli *client.Client, id string) (io.ReadC
 		return nil, fmt.Errorf("logs %s: %w", id, err)
 	}
 	return out, nil
+}
+
+// ContainerStats opens a container's live resource usage: a JSON
+// container.StatsResponse about every second, until ctx is cancelled. The
+// first sample has no previous CPU reading, so CPU usage can only be worked
+// out from the second one on. The caller decodes the samples and must close
+// the stream.
+func ContainerStats(ctx context.Context, cli *client.Client, id string) (io.ReadCloser, error) {
+	out, err := cli.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
+	if err != nil {
+		return nil, fmt.Errorf("container stats %s: %w", id, err)
+	}
+	return out.Body, nil
 }
 
 func toDockerContainers(c container.Summary) models.DockerModel {

@@ -26,8 +26,10 @@ func ListImages(ctx context.Context, cli *client.Client) ([]models.ImageModel, e
 	return imagesList, nil
 }
 
-// function: remove image and all the tags (UI has to confirm if the user want to delete all the
-// tags )
+// RemoveImage removes an image by its ID. Docker refuses when the image has
+// several tags (remove them one by one with RemoveImageTag instead) or when
+// a container, running or stopped, uses it. Untagged parent images that are
+// left over are removed too.
 func RemoveImage(ctx context.Context, cli *client.Client, id string) error {
 	_, err := cli.ImageRemove(ctx, id, client.ImageRemoveOptions{PruneChildren: true})
 	if err != nil {
@@ -36,7 +38,8 @@ func RemoveImage(ctx context.Context, cli *client.Client, id string) error {
 	return nil
 }
 
-// functions: remove a image tag only.
+// RemoveImageTag removes one name of an image. The image itself goes only
+// when that was its last tag, and then Docker refuses if a container uses it.
 func RemoveImageTag(ctx context.Context, cli *client.Client, tag string) error {
 	_, err := cli.ImageRemove(ctx, tag, client.ImageRemoveOptions{PruneChildren: true})
 	if err != nil {

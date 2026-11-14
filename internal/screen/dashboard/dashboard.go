@@ -249,6 +249,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		bridge.ImageRemovedMsg, bridge.LogsOpenedMsg, bridge.LogsMsg:
 		return m, m.dialogMsg(msg)
 
+	case bridge.StatsOpenedMsg, bridge.StatsMsg:
+		return m, m.statsMsg(msg)
+
 	case tea.KeyMsg:
 		return m, m.key(msg)
 

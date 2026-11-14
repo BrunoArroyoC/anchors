@@ -106,6 +106,7 @@ type dialog struct {
 	armed   action // a remove waiting for its second press
 	failMsg string // "Docker didn't stop it." after a refused action
 	blocker string // ID of a container that uses the image
+	meter   meter  // live CPU and memory while the container runs
 }
 
 // busy is true while Docker is working on something the dialog asked.
@@ -175,6 +176,7 @@ type dlgLayout struct {
 	x0, y0, x1, y1    int
 	inL, inR          int // text runs from inL to before inR
 	headRow, stateRow int
+	statsRow          int // a container's live CPU and memory; 0 for an image
 	actRow, ruleRow   int // actRow: the buttons and what is happening
 	termTop, termRows int
 	termL, termR      int // log text runs from termL to before termR
@@ -208,6 +210,10 @@ func (m *Model) dialogLayout() dlgLayout {
 	w.headRow = w.y0 + 1 + gap
 	w.stateRow = w.headRow + 1
 	w.actRow = w.stateRow + 1 + gap
+	if m.dlg != nil && m.dlg.kind == containerDlg {
+		w.statsRow = w.stateRow + 1
+		w.actRow++
+	}
 	w.ruleRow = w.actRow + 1 + gap
 	w.termTop = w.ruleRow + 1
 	w.termRows = max(1, w.y1-gap-w.termTop)
@@ -248,7 +254,7 @@ func (m *Model) openDialog() tea.Cmd {
 	d.c = *r.c
 	if isUp(d.c) {
 		d.phase = phaseRunning
-		return m.openLogs()
+		return tea.Batch(m.openLogs(), m.openStats())
 	}
 	return nil
 }
@@ -276,9 +282,13 @@ func (m *Model) describeImage() {
 }
 
 func (m *Model) closeDialog() {
-	if m.dlg != nil && m.dlg.stream != nil {
+	if m.dlg == nil {
+		return
+	}
+	if m.dlg.stream != nil {
 		m.dlg.stream.Close()
 	}
+	m.closeStats()
 	m.dlg = nil
 }
 
@@ -298,6 +308,7 @@ func (m *Model) fresh(p phase) {
 	if d.stream != nil {
 		d.stream.Close()
 	}
+	m.closeStats()
 	*d = dialog{kind: d.kind, c: d.c, img: d.img, born: d.born, phase: p, phaseAt: m.now}
 }
 
@@ -410,7 +421,7 @@ func (m *Model) dialogMsg(msg tea.Msg) tea.Cmd {
 		d.phase, d.phaseAt = phaseRunning, m.now
 		d.c.State, d.c.Status = "running", "just started" // until the list refreshes
 		m.busy(flashDur)
-		return tea.Batch(m.openLogs(), m.Load(), m.kick())
+		return tea.Batch(m.openLogs(), m.openStats(), m.Load(), m.kick())
 
 	case bridge.StoppedMsg:
 		if !mine(msg.ID, phaseStopping) {
@@ -421,6 +432,7 @@ func (m *Model) dialogMsg(msg tea.Msg) tea.Cmd {
 		}
 		d.phase, d.phaseAt = phaseReady, m.now
 		d.c.State, d.c.Status = "exited", "just stopped"
+		m.closeStats()
 		m.busy(flashDur)
 		return tea.Batch(m.Load(), m.kick())
 
@@ -434,7 +446,7 @@ func (m *Model) dialogMsg(msg tea.Msg) tea.Cmd {
 		m.fresh(phaseRunning) // the old stream ended with the stop; follow the new run
 		d.c.State, d.c.Status = "running", "just restarted"
 		m.busy(flashDur)
-		return tea.Batch(m.openLogs(), m.Load(), m.kick())
+		return tea.Batch(m.openLogs(), m.openStats(), m.Load(), m.kick())
 
 	case bridge.ContainerRemovedMsg:
 		if !mine(msg.ID, phaseRemoving) {
@@ -554,6 +566,7 @@ func (m *Model) dialogSynced() {
 	}
 	if d.phase == phaseRunning && d.ended && !isUp(d.c) {
 		d.phase, d.phaseAt = phaseReady, m.now
+		m.closeStats()
 	}
 }
 

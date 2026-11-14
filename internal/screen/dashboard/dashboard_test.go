@@ -263,6 +263,23 @@ func TestDialog(t *testing.T) {
 		}
 		s := &bridge.LogStream{ID: id}
 		m.Update(bridge.LogsOpenedMsg{ID: id, Stream: s})
+		if !m.dlg.meter.opening {
+			t.Fatalf("%dx%d: a started container should open its stats", cols, rows)
+		}
+		run(0.1)
+		check("2b-measuring")
+		ss := &bridge.StatsStream{ID: id}
+		m.Update(bridge.StatsOpenedMsg{ID: id, Stream: ss})
+		mem := bridge.Stats{MemUsage: 182_400_000, MemLimit: 7_600_000_000, MemPercent: 2.4}
+		m.Update(bridge.StatsMsg{Stream: ss, Stats: mem}) // the first sample: no CPU yet
+		for _, v := range []float64{3, 8, 14, 40, 95, 160, 60, 22, 12.4} {
+			st := mem
+			st.HasCPU, st.CPUPercent = true, v
+			m.Update(bridge.StatsMsg{Stream: ss, Stats: st})
+		}
+		if len(m.dlg.meter.cpu) != 9 || m.dlg.meter.cur.CPUPercent != 12.4 {
+			t.Fatalf("%dx%d: the meter should keep the CPU samples, got %v", cols, rows, m.dlg.meter.cpu)
+		}
 		var lines []bridge.LogLine
 		lines = append(lines,
 			bridge.LogLine{Text: "\x1b[32mINFO\x1b[0m\tworker 2.4.1 starting"},
@@ -305,6 +322,13 @@ func TestDialog(t *testing.T) {
 		m.Update(bridge.StoppedMsg{ID: id})
 		if m.dlg.phase != phaseReady || m.dlg.c.State != "exited" {
 			t.Fatalf("%dx%d: once stopped the dialog should offer a start", cols, rows)
+		}
+		if m.dlg.meter.stream != nil || m.dlg.meter.have {
+			t.Fatalf("%dx%d: a stopped container's stats should be closed and forgotten", cols, rows)
+		}
+		m.Update(bridge.StatsMsg{Stream: ss, Stats: mem}) // a late sample from the closed stream
+		if m.dlg.meter.have {
+			t.Fatalf("%dx%d: a closed stream's sample should be ignored", cols, rows)
 		}
 
 		m.Update(bridge.LogsMsg{Stream: s, Done: true})

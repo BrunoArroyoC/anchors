@@ -87,6 +87,7 @@ func (m *Model) drawDialog(hints [2]int) {
 		m.drawImageHead(w, p)
 	} else {
 		m.drawContainerHead(w, p)
+		m.drawStats(w, p)
 	}
 	m.drawActions(w, p)
 
