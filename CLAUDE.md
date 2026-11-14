@@ -17,7 +17,7 @@ Status: early. The backend lists Docker containers and images; the bridge wraps 
 ## Commands
 
 ```bash
-go run ./cmd/my-cli      # run the app (needs a reachable Docker daemon, DOCKER_HOST is respected)
+go run ./cmd/anchors     # run the app (needs a reachable Docker daemon, DOCKER_HOST is respected)
 go build ./...           # build
 go vet ./...             # vet
 go test ./...            # tests
@@ -27,7 +27,7 @@ go mod tidy              # only after the Charm libs are imported, or tidy remov
 ## Architecture
 
 ```
-cmd/my-cli/main.go       entrypoint: creates clients, builds the root model, runs tea.NewProgram
+cmd/anchors/main.go      entrypoint: creates clients, builds the root model, runs tea.NewProgram
 internal/models/         plain data structs shared by every layer (DockerModel, later PodModel...)
 internal/functions/      backend: talks to Docker/K8s APIs, returns models. No Bubble Tea imports.
 internal/bridge/         adapter: wraps backend calls as tea.Cmd and defines the tea.Msg types (docker.go)

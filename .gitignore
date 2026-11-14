@@ -1,2 +1,4 @@
 .env
 .claude
+# the binary from `go build -o anchors ./cmd/anchors`
+/anchors
